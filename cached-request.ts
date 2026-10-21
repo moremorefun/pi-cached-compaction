@@ -90,23 +90,31 @@ function canonical(value: unknown): string {
 	return JSON.stringify(value, (key, field) => (key === "cache_control" ? undefined : field)) ?? "undefined";
 }
 
-/** Why `rebuilt` cannot read the cache entry `captured` wrote, or undefined when it extends that request exactly. */
-export function prefixMismatch(captured: Payload, rebuilt: Payload, key: string): string | undefined {
+/**
+ * Why `rebuilt` cannot read the cache entry `captured` wrote, or undefined when it extends that request exactly.
+ * `cacheNeutral` names top-level fields the provider keeps out of the cached prefix.
+ */
+export function prefixMismatch(captured: Payload, rebuilt: Payload, key: string, cacheNeutral: ReadonlySet<string> = new Set()): string | undefined {
 	for (const field of new Set([...Object.keys(captured), ...Object.keys(rebuilt)])) {
-		if (field === key || OUTPUT_LIMIT_KEYS.has(field)) continue;
+		if (field === key || OUTPUT_LIMIT_KEYS.has(field) || cacheNeutral.has(field)) continue;
 		if (canonical(captured[field]) !== canonical(rebuilt[field])) return `request field "${field}" differs`;
 	}
 	const before = captured[key] as unknown[];
 	const after = rebuilt[key];
 	if (!Array.isArray(after)) return `request has no "${key}" array`;
 	let end = before.length;
-	// Anthropic sends the active effort as trailing system entries; the next request moves them after the new turns.
-	while (end > 0 && isPayload(before[end - 1]) && (before[end - 1] as Payload).role === "system") end--;
+	// The active effort rides at the end, after the cache breakpoint: Anthropic as trailing system entries,
+	// OpenAI as a trailing configuration_update item. The next request moves it after the new turns.
+	while (end > 0 && isTrailingEffort(before[end - 1])) end--;
 	if (after.length <= end) return "request is shorter than the cached one";
 	for (let index = 0; index < end; index++) {
 		if (canonical(before[index]) !== canonical(after[index])) return `message ${index} differs`;
 	}
 	return undefined;
+}
+
+function isTrailingEffort(item: unknown): boolean {
+	return isPayload(item) && (item.role === "system" || item.type === "configuration_update");
 }
 
 function contentText(content: string | { type: string; text?: string }[]): string {

@@ -29,6 +29,20 @@ const BRIDGE_API = "claude-bridge";
 const FORK_REQUEST_HEADER = "x-claude-bridge-fork";
 /** Anthropic's cache lifetimes, for a provider that reports the tier it wrote but declares no lifetime (the Claude bridge). */
 const REPORTED_TIER_SECONDS = { short: 300, long: 3600 } as const;
+/**
+ * OpenAI's guaranteed minimum cache lifetime on GPT-5.6 and later. Pi requests it for both retention
+ * settings (it never sends the 12-hour tier). Earlier GPT models only state a typical lifetime.
+ */
+const OPENAI_MIN_TTL_SECONDS = 1800;
+
+/**
+ * OpenAI's own Responses API. There, tool_choice is not part of the cached prefix, and OpenAI
+ * recommends tool_choice "none" to disable tools while keeping the cache; on Anthropic the same
+ * change invalidates the message cache.
+ */
+function isOpenAiResponses(model: Model<Api>): boolean {
+	return model.provider === "openai" && model.api === "openai-responses";
+}
 /** How long before expiry the idle compaction starts, leaving time for the request to reach the provider. */
 const EXPIRY_LEAD_MS = 20_000;
 const WARNING_MS = 30_000;
@@ -48,7 +62,10 @@ function formatTokens(count: number): string {
 function cacheTtlMs(model: Model<Api>, entries: SessionEntry[]): number | undefined {
 	const reported = reportedCacheTier(entries);
 	const tier = reported ?? (process.env.PI_CACHE_RETENTION === "long" ? "long" : "short");
-	const seconds = model.promptCache?.[tier] ?? (reported ? REPORTED_TIER_SECONDS[reported] : undefined);
+	const explicitCacheModel = (model.compat as { supportsExplicitPromptCacheMode?: boolean } | undefined)?.supportsExplicitPromptCacheMode === true;
+	const seconds = model.promptCache?.[tier]
+		?? (reported ? REPORTED_TIER_SECONDS[reported] : undefined)
+		?? (isOpenAiResponses(model) && explicitCacheModel ? OPENAI_MIN_TTL_SECONDS : undefined);
 	return seconds === undefined ? undefined : seconds * 1000;
 }
 
@@ -222,15 +239,18 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		const thinkingLevel = pi.getThinkingLevel();
 		const payload = request.payload;
 		const controller = new AbortController();
+		const disableTools = payload !== undefined && isOpenAiResponses(request.model);
+		const cacheNeutral = new Set(disableTools ? ["tool_choice"] : []);
 		const response = await ctx.modelRegistry
 			.streamSimple(request.model, { messages: convertToLlm([...request.transcript, ...trailing, instruction]) }, {
 				reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
 				sessionId: ctx.sessionManager.getSessionId(),
 				signal: AbortSignal.any([event.signal, controller.signal]),
+				...(disableTools ? { toolChoice: "none" as const } : {}),
 				...(payload && key
 					? {
 						onPayload: (params: unknown) => {
-							mismatch = isPayload(params) ? prefixMismatch(payload, params, key) : "the provider payload is not an object";
+							mismatch = isPayload(params) ? prefixMismatch(payload, params, key, cacheNeutral) : "the provider payload is not an object";
 							if (mismatch) throw new Error(PREFIX_MISMATCH);
 							return undefined;
 						},

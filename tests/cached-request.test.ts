@@ -52,6 +52,16 @@ test("trailing messages are the branch entries after the captured transcript", (
 	assert.deepEqual(trailingMessages(entries, [prompt]), [reply]);
 });
 
+test("a field the provider keeps out of the cached prefix may differ only when named", () => {
+	const captured = { model: "gpt", tool_choice: "auto", input: [{ role: "user", content: "hi" }] };
+	const rebuilt = { ...captured, tool_choice: "none", input: [...captured.input, { role: "user", content: "summarize" }] };
+	assert.equal(prefixMismatch(captured, rebuilt, "input"), 'request field "tool_choice" differs');
+	assert.equal(prefixMismatch(captured, rebuilt, "input", new Set(["tool_choice"])), undefined);
+	// OpenAI's active reasoning effort trails the cache breakpoint and moves after the new turns.
+	const withEffort = { ...captured, input: [...captured.input, { type: "configuration_update", reasoning: { effort: "high" } }] };
+	assert.equal(prefixMismatch(withEffort, rebuilt, "input", new Set(["tool_choice"])), undefined);
+});
+
 test("a branch that no longer contains the captured transcript is rejected", () => {
 	assert.equal(trailingMessages([entry("a", user("other branch", 5))], [user("fix the bug", 1)]), undefined);
 	const withSummary = [
