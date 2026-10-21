@@ -3,9 +3,43 @@
 Pi's built-in compaction sends the conversation to the model as a new request with its own system prompt, so it never reads the prompt cache your session just paid to build. This extension sends the summary request as the next turn of the same conversation instead. The provider then reads almost all of it from the cache, at about a tenth of the normal input price on Anthropic and OpenAI.
 
 ```
-Pi default:   [summarizer prompt][conversation as plain text]    → full input price
-this:         [same tools][same system prompt][same messages]   → cache read
-              [+ "summarize everything above"]                   → small new tail
+YOUR SESSION (already cached, warm)
+┌──────────────────────────────────────────────────────────────┐
+│ [tools] [system prompt] [msg 1] [msg 2] ... [msg N]          │
+└──────────────────────────────────────────────────────────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━  PI'S DEFAULT COMPACTION  ━━━━━━━━━━━━━━━━━━━━━━
+
+ ┌───────────────────────────────┬─────────────────────────────────┐
+ │ "You are a context            │ "[User]: ... [Assistant]: ...   │
+ │  summarization assistant"     │  [Tool result]: (cut to 2k)..." │
+ │ (different system prompt)     │  only the OLD msgs, as text     │
+ └───────────────────────────────┴─────────────────────────────────┘
+   ▲ differs from token 1           ▲ text, not real messages
+   no tools, cacheRetention: "none"
+
+ cache:   ✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗✗  0% hit, every token at 1.0×
+ sees:    old messages only, tool output cut to 2,000 chars
+
+━━━━━━━━━━━━━━━━━━━━━━━━━  PI-CACHED-COMPACTION  ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ ┌──────────────────────────────────────────────────────┬───────────┐
+ │ [tools] [system prompt] [msg 1] ... [msg N]          │ "Summarize│
+ │  byte-for-byte the same as your last turn            │  above"   │
+ └──────────────────────────────────────────────────────┴───────────┘
+                                                          ▲ tiny new tail
+ cache:   ✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓·  ~95% hit at ~0.1×
+ sees:    the full conversation, tools included, nothing cut
+
+━━━━━━━━━━━━━━━━━━━━━━━━━  RESULT (same for both)  ━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ ┌──────────┬──────────┬───────────────────────────┐
+ │ system   │ SUMMARY  │ recent msgs kept verbatim │
+ └──────────┴──────────┴───────────────────────────┘
+
+ Example, 180k context near the limit:
+   default:  ~150k old msgs × 1.0×         ≈ 150k token-cost
+   cached:   ~180k × 0.1× + small tail     ≈  20k token-cost
 ```
 
 The summary uses Pi's checkpoint format, keeps Pi's recent-message window, and carries read/modified file lists forward like the default.
@@ -61,9 +95,16 @@ Put this in `~/.pi/agent/settings.json`. The defaults are `"long"`, `false`, and
 
 Before anything is sent, the extension rebuilds the request with Pi's own serializer and compares it field by field with the last real request. If any part of the cached prefix would differ, it doesn't send its request and Pi's default compaction runs instead. That covers a different thinking level, an edited history, tree navigation, or a model switch.
 
+```
+ rebuild request ──► compare with last real request
+                       ├─ identical prefix ──► send ✅
+                       └─ any difference ───► send nothing
+                                              └─► Pi's default compaction
+```
+
 It also steps aside when:
 
-- the model's declared cache lifetime has passed since the last request or cache-warming refresh, since a cold cache makes the full prompt cost more than the default
+- the model's declared cache lifetime has passed since the last request or cache-warming refresh, or the last successful request didn't use the cache. A cold cache makes the full prompt cost more than the default.
 - compaction is recovering from a context overflow
 - the provider doesn't build an HTTP payload Pi can see, such as the `pi-claude` Claude Code bridge
 - the API isn't a `messages` or `input` style payload (Anthropic, OpenAI Chat Completions, OpenAI Responses). Google isn't supported yet.

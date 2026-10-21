@@ -70,5 +70,7 @@ test("cache expiry follows the latest cached request and cache-warming refreshes
 	assert.equal(cacheExpiresAt([entry("a", assistant(1_000, 500))], 300_000), 301_000);
 	assert.equal(cacheExpiresAt([entry("a", assistant(1_000, 500)), warm(200_000)], 300_000), 500_000);
 	assert.equal(cacheExpiresAt([entry("a", assistant(1_000, 0))], 300_000), undefined);
+	const failed = { ...assistant(9_000, 0), stopReason: "error" } as AgentMessage;
+	assert.equal(cacheExpiresAt([entry("a", assistant(1_000, 500)), entry("b", failed)], 300_000), 301_000);
 	assert.equal(cacheExpiresAt([entry("a", assistant(1_000, 500)), compaction], 300_000), undefined);
 });

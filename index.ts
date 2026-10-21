@@ -6,7 +6,7 @@ import {
 	formatRemaining,
 	isPayload,
 	messageArrayKey,
-	messagePreview,
+	entryPreview,
 	prefixMismatch,
 	summaryInstruction,
 	trailingMessages,
@@ -160,12 +160,15 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		if (!trailing) return fallBack("the conversation changed since the last request");
 		// A cold cache makes the full prompt cost more than Pi's default, which sends only the summarized messages.
 		const ttlMs = cacheTtlMs(request.model);
-		const expiresAt = ttlMs === undefined ? undefined : cacheExpiresAt(event.branchEntries, ttlMs);
-		if (expiresAt !== undefined && Date.now() >= expiresAt) return fallBack("the prompt cache has expired");
+		if (ttlMs !== undefined) {
+			const expiresAt = cacheExpiresAt(event.branchEntries, ttlMs);
+			if (expiresAt === undefined) return fallBack("the last request did not use the prompt cache");
+			if (Date.now() >= expiresAt) return fallBack("the prompt cache has expired");
+		}
 
 		const { preparation } = event;
 		const keptEntry = event.branchEntries.find((entry) => entry.id === preparation.firstKeptEntryId);
-		const keptStart = keptEntry?.type === "message" ? messagePreview(keptEntry.message) : undefined;
+		const keptStart = keptEntry ? entryPreview(keptEntry) : undefined;
 		const instruction: AgentMessage = {
 			role: "user",
 			content: [{ type: "text", text: summaryInstruction(keptStart, event.customInstructions) }],

@@ -49,6 +49,8 @@ export function cacheExpiresAt(entries: SessionEntry[], ttlMs: number): number |
 		if (entry.type === "compaction") {
 			refreshedAt = undefined;
 		} else if (entry.type === "message" && entry.message.role === "assistant") {
+			// A failed request may never have reached the cache, so it neither refreshes nor clears it.
+			if (entry.message.stopReason === "error" || entry.message.stopReason === "aborted") continue;
 			const { cacheRead, cacheWrite } = entry.message.usage;
 			refreshedAt = cacheRead + cacheWrite > 0 ? entry.message.timestamp : undefined;
 		} else if (entry.type === "usage" && entry.kind === "cache_warm" && refreshedAt !== undefined) {
@@ -89,19 +91,28 @@ export function prefixMismatch(captured: Payload, rebuilt: Payload, key: string)
 	return undefined;
 }
 
-/** First words of a message, so the summary prompt can point at where the kept context starts. */
-export function messagePreview(message: AgentMessage): string | undefined {
+function contentText(content: string | { type: string; text?: string }[]): string {
+	return typeof content === "string" ? content : content.flatMap((block) => (block.type === "text" && block.text ? [block.text] : [])).join("\n");
+}
+
+/** First words of the entry Pi keeps first, so the summary prompt can point at where the kept context starts. */
+export function entryPreview(entry: SessionEntry): string | undefined {
 	let text: string | undefined;
-	if (message.role === "user") {
-		text = typeof message.content === "string"
-			? message.content
-			: message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
-	} else if (message.role === "assistant") {
-		text = message.content
-			.flatMap((block) => (block.type === "text" ? [block.text] : block.type === "toolCall" ? [`[tool call: ${block.name}]`] : []))
-			.join("\n");
-	} else if (message.role === "bashExecution") {
-		text = `$ ${message.command}`;
+	if (entry.type === "custom_message") {
+		text = contentText(entry.content);
+	} else if (entry.type === "branch_summary") {
+		text = entry.summary;
+	} else if (entry.type === "message") {
+		const message = entry.message;
+		if (message.role === "user") {
+			text = contentText(message.content);
+		} else if (message.role === "assistant") {
+			text = message.content
+				.flatMap((block) => (block.type === "text" ? [block.text] : block.type === "toolCall" ? [`[tool call: ${block.name}]`] : []))
+				.join("\n");
+		} else if (message.role === "bashExecution") {
+			text = `$ ${message.command}`;
+		}
 	}
 	text = text?.trim();
 	if (!text) return undefined;
