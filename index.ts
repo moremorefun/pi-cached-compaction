@@ -24,6 +24,10 @@ const PREFIX_MISMATCH = "pi-cached-compaction: request prefix differs from the c
 /** How long before expiry the idle compaction starts, leaving time for the request to reach the provider. */
 const EXPIRY_LEAD_MS = 20_000;
 const WARNING_MS = 30_000;
+/** Records the retention this extension chose, so it can tell its own value (also inherited by child Pi processes) from the user's. */
+const RETENTION_MARKER = "PI_CACHED_COMPACTION_RETENTION";
+/** Set once an interactive session in this process chose long retention. In-process headless children share the environment. */
+const INTERACTIVE_OWNER = Symbol.for("pi-cached-compaction.interactive-long-retention");
 
 function formatTokens(count: number): string {
 	return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count);
@@ -35,10 +39,26 @@ function cacheTtlMs(model: Model<Api>): number | undefined {
 	return seconds === undefined ? undefined : seconds * 1000;
 }
 
+/**
+ * The 1-hour tier only pays off across human pauses, and a cache cannot move up a tier without
+ * a full rewrite, so the choice is made once per session: long when interactive, short when headless.
+ */
+function applyRetention(preferLong: boolean, interactive: boolean): void {
+	const current = process.env.PI_CACHE_RETENTION;
+	if (current !== undefined && process.env[RETENTION_MARKER] !== current) return;
+	const host = globalThis as Record<symbol, unknown>;
+	if (preferLong && interactive) {
+		process.env.PI_CACHE_RETENTION = process.env[RETENTION_MARKER] = "long";
+		host[INTERACTIVE_OWNER] = true;
+	} else if (interactive || !host[INTERACTIVE_OWNER]) {
+		delete process.env.PI_CACHE_RETENTION;
+		delete process.env[RETENTION_MARKER];
+		host[INTERACTIVE_OWNER] = false;
+	}
+}
+
 export default function cachedCompaction(pi: ExtensionAPI) {
 	const config = loadConfig();
-	// Providers read this on every request. An explicit environment value still wins.
-	if (config.cacheRetention === "long" && process.env.PI_CACHE_RETENTION === undefined) process.env.PI_CACHE_RETENTION = "long";
 
 	let pendingTranscript: AgentMessage[] | undefined;
 	let captured: CapturedRequest | undefined;
@@ -58,13 +78,13 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 
 	const compactBeforeExpiry = (ctx: ExtensionContext, remainingMs: number) => {
 		if (!config.compactBeforeExpiry || !captured || !ctx.isIdle() || ctx.hasPendingMessages()) return;
-		const percent = ctx.getContextUsage()?.percent;
-		if (percent === null || percent === undefined || percent < config.minContextPercent) return;
+		const tokens = ctx.getContextUsage()?.tokens;
+		if (tokens === null || tokens === undefined || tokens < config.minContextTokens) return;
 		expiryCompaction = true;
 		// The provider reads the cache when the request starts; counting down past that point would mislead.
 		stopTimer(ctx);
 		if (ctx.hasUI) {
-			ctx.ui.notify(`Prompt cache expires in ${Math.ceil(remainingMs / 1000)}s with context at ${Math.round(percent)}%. Compacting while it is still warm.`, "info");
+			ctx.ui.notify(`Prompt cache expires in ${Math.ceil(remainingMs / 1000)}s with ${formatTokens(tokens)} tokens of context. Compacting while it is still warm.`, "info");
 		}
 		ctx.compact({
 			onComplete: () => {
@@ -123,7 +143,11 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 	pi.on("message_start", () => {
 		pendingTranscript = undefined;
 	});
-	pi.on("session_start", (_event, ctx) => startTimer(ctx));
+	pi.on("session_start", (_event, ctx) => {
+		// Providers read PI_CACHE_RETENTION on every request, so this runs before the session's first one.
+		applyRetention(config.cacheRetention === "long", ctx.hasUI);
+		startTimer(ctx);
+	});
 	pi.on("agent_start", (_event, ctx) => stopTimer(ctx));
 	pi.on("agent_settled", (_event, ctx) => startTimer(ctx));
 	pi.on("session_compact", (_event, ctx) => forget(ctx));

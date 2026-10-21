@@ -3,13 +3,13 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export interface CachedCompactionConfig {
-	/** "long" asks providers for their longer cache lifetime: 1 hour on Anthropic, 24 hours on OpenAI. */
+	/** "long" asks providers for their longer cache lifetime in interactive sessions: 1 hour on Anthropic, 24 hours on OpenAI. */
 	cacheRetention: "short" | "long";
 	compactBeforeExpiry: boolean;
-	minContextPercent: number;
+	minContextTokens: number;
 }
 
-const DEFAULTS: CachedCompactionConfig = { cacheRetention: "long", compactBeforeExpiry: false, minContextPercent: 50 };
+const DEFAULTS: CachedCompactionConfig = { cacheRetention: "long", compactBeforeExpiry: false, minContextTokens: 50_000 };
 
 /** Reads the `cachedCompaction` key of the global Pi settings file. Invalid values fail loudly. */
 export function loadConfig(): CachedCompactionConfig {
@@ -18,12 +18,12 @@ export function loadConfig(): CachedCompactionConfig {
 	const raw: unknown = JSON.parse(readFileSync(path, "utf8")).cachedCompaction;
 	if (raw === undefined) return DEFAULTS;
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error(`cachedCompaction in ${path} must be an object`);
-	const { cacheRetention = DEFAULTS.cacheRetention, compactBeforeExpiry = DEFAULTS.compactBeforeExpiry, minContextPercent = DEFAULTS.minContextPercent } =
+	const { cacheRetention = DEFAULTS.cacheRetention, compactBeforeExpiry = DEFAULTS.compactBeforeExpiry, minContextTokens = DEFAULTS.minContextTokens } =
 		raw as Record<string, unknown>;
 	if (cacheRetention !== "short" && cacheRetention !== "long") throw new Error(`cachedCompaction.cacheRetention in ${path} must be "short" or "long"`);
 	if (typeof compactBeforeExpiry !== "boolean") throw new Error(`cachedCompaction.compactBeforeExpiry in ${path} must be true or false`);
-	if (typeof minContextPercent !== "number" || !(minContextPercent >= 0 && minContextPercent <= 100)) {
-		throw new Error(`cachedCompaction.minContextPercent in ${path} must be a number from 0 to 100`);
+	if (typeof minContextTokens !== "number" || !Number.isInteger(minContextTokens) || minContextTokens < 0) {
+		throw new Error(`cachedCompaction.minContextTokens in ${path} must be a whole number of tokens`);
 	}
-	return { cacheRetention, compactBeforeExpiry, minContextPercent };
+	return { cacheRetention, compactBeforeExpiry, minContextTokens };
 }

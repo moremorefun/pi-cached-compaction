@@ -73,23 +73,34 @@ In a small session like this one, the default sends fewer tokens, because it ski
 
 ## Cache timer and compacting before expiry
 
-The extension turns on Pi's long cache retention (`PI_CACHE_RETENTION=long`) unless you've set that variable yourself. Anthropic caches then last 1 hour instead of 5 minutes, and OpenAI caches 24 hours. Anthropic charges 2× input price to write a 1-hour cache instead of 1.25×, and reads cost the same.
+In interactive sessions the extension turns on Pi's long cache retention (`PI_CACHE_RETENTION=long`) unless you've set that variable yourself. Anthropic caches then last 1 hour instead of 5 minutes, and OpenAI caches 24 hours. Anthropic charges 2× input price to write a 1-hour cache instead of 1.25×, and reads cost the same. Headless runs (`pi -p`, JSON mode, subagent processes) keep the 5-minute cache, because nobody pauses there and the higher write price would be wasted.
+
+The choice is made once per session because a cache can't move up a tier cheaply. Measured through Claude Code on Anthropic:
+
+```
+ 5m entry, then a 1h request   → full rewrite at 2×       (42,132 tokens written)
+ 1h entry, then a 5m request   → read as normal           (53,459 read, 67 written)
+ idle 8 min on 5m              → expired, rewrite         (39,707 written)
+ idle 8 min on 1h              → still warm
+```
+
+So "5 minutes while working, 1 hour when idle" costs more than choosing 1 hour from the start. With the 1-hour cache, Pi's own cache warmer rarely fires, which is fine: it stops after 30 idle minutes, before a 1-hour cache needs a refresh.
 
 While Pi is idle, the footer shows how long the cache has left: `⏱ 42m`, then `⏱ 0:45`, turning to the warning color in the last 30 seconds and to `cache cold` once it expires. The countdown needs a model that declares its cache lifetime, which today means Pi's built-in Anthropic models. In powerline-footer it shows in the `extension_statuses` segment.
 
-With `compactBeforeExpiry` on, Pi compacts 20 seconds before the cache expires, but only when it's idle, nothing is queued, the context is at least `minContextPercent` full, and the cached path is available. Otherwise nothing happens. Sending a message resets the timer.
+With `compactBeforeExpiry` on, Pi compacts 20 seconds before the cache expires, but only when it's idle, nothing is queued, the context holds at least `minContextTokens` tokens, and the cached path is available. Otherwise nothing happens. Sending a message resets the timer. The threshold is in tokens rather than percent because the cost of rewriting an expired cache depends on its size, and on 1M-token models a percentage would almost never trigger.
 
 ```json
 {
   "cachedCompaction": {
     "cacheRetention": "long",
     "compactBeforeExpiry": true,
-    "minContextPercent": 50
+    "minContextTokens": 50000
   }
 }
 ```
 
-Put this in `~/.pi/agent/settings.json`. The defaults are `"long"`, `false`, and `50`.
+Put this in `~/.pi/agent/settings.json`. The defaults are `"long"`, `false`, and `50000`.
 
 ## How it stays safe
 
