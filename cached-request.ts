@@ -23,22 +23,21 @@ function sameMessage(a: AgentMessage, b: AgentMessage): boolean {
 }
 
 /**
- * Messages the branch gained after the captured request, or undefined when the branch
- * no longer extends that request (navigation, edits, or entries that add model input).
+ * Messages the branch gained after the captured request, or why the branch no longer extends
+ * that request (navigation, edits, or entries that add model input).
  */
-export function trailingMessages(entries: SessionEntry[], transcript: AgentMessage[]): AgentMessage[] | undefined {
+export function trailingMessages(entries: SessionEntry[], transcript: AgentMessage[]): { messages: AgentMessage[] } | { reason: string } {
 	const last = transcript.findLast((message) => message.role !== "system");
-	if (!last) return undefined;
-	const index = entries.findLastIndex((entry) => entry.type === "message" && sameMessage(entry.message, last));
-	if (index === -1) return undefined;
-	const trailing: AgentMessage[] = [];
+	const index = last ? entries.findLastIndex((entry) => entry.type === "message" && sameMessage(entry.message, last)) : -1;
+	if (index === -1) return { reason: "its last message is no longer on this branch" };
+	const messages: AgentMessage[] = [];
 	for (const entry of entries.slice(index + 1)) {
-		if (entry.type === "message") trailing.push(entry.message);
+		if (entry.type === "message") messages.push(entry.message);
 		// Compaction during a run appends its entry after messages the next request carries behind the new summary.
 		else if (entry.type === "compaction" && transcript.some((message) => message.role === "compactionSummary" && message.timestamp === Date.parse(entry.timestamp))) continue;
-		else if (!CONTEXT_FREE_ENTRY_TYPES.has(entry.type)) return undefined;
+		else if (!CONTEXT_FREE_ENTRY_TYPES.has(entry.type)) return { reason: `a ${entry.type} entry came after it` };
 	}
-	return trailing;
+	return { messages };
 }
 
 /**
@@ -87,30 +86,50 @@ export function formatRemaining(ms: number): string {
 	return `⏱ ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+export function formatTokens(count: number): string {
+	return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count);
+}
+
 function canonical(value: unknown): string {
 	// Pi moves the cache breakpoint to the newest message on every request; it is not part of the cached content.
 	return JSON.stringify(value, (key, field) => (key === "cache_control" ? undefined : field)) ?? "undefined";
 }
 
+export interface PrefixMismatch {
+	reason: string;
+	/** Both serialized values from just before their first differing character, so the log shows what changed. */
+	captured?: string;
+	rebuilt?: string;
+}
+
+function difference(reason: string, captured: string, rebuilt: string): PrefixMismatch {
+	let at = 0;
+	while (at < captured.length && captured[at] === rebuilt[at]) at++;
+	const from = Math.max(0, at - 40);
+	return { reason, captured: captured.slice(from, at + 160), rebuilt: rebuilt.slice(from, at + 160) };
+}
+
 /**
- * Why `rebuilt` cannot read the cache entry `captured` wrote, or undefined when it extends that request exactly.
+ * Where `rebuilt` stops matching the cache entry `captured` wrote, or undefined when it extends that request exactly.
  * `cacheNeutral` names top-level fields the provider keeps out of the cached prefix.
  */
-export function prefixMismatch(captured: Payload, rebuilt: Payload, key: string, cacheNeutral: ReadonlySet<string> = new Set()): string | undefined {
+export function prefixMismatch(captured: Payload, rebuilt: Payload, key: string, cacheNeutral: ReadonlySet<string> = new Set()): PrefixMismatch | undefined {
 	for (const field of new Set([...Object.keys(captured), ...Object.keys(rebuilt)])) {
 		if (field === key || OUTPUT_LIMIT_KEYS.has(field) || cacheNeutral.has(field)) continue;
-		if (canonical(captured[field]) !== canonical(rebuilt[field])) return `request field "${field}" differs`;
+		const [before, after] = [canonical(captured[field]), canonical(rebuilt[field])];
+		if (before !== after) return difference(`request field "${field}" differs`, before, after);
 	}
 	const before = captured[key] as unknown[];
 	const after = rebuilt[key];
-	if (!Array.isArray(after)) return `request has no "${key}" array`;
+	if (!Array.isArray(after)) return { reason: `request has no "${key}" array` };
 	let end = before.length;
 	// The active effort rides at the end, after the cache breakpoint: Anthropic as trailing system entries,
 	// OpenAI as a trailing configuration_update item. The next request moves it after the new turns.
 	while (end > 0 && isTrailingEffort(before[end - 1])) end--;
-	if (after.length <= end) return "request is shorter than the cached one";
+	if (after.length <= end) return { reason: "request is shorter than the cached one" };
 	for (let index = 0; index < end; index++) {
-		if (canonical(before[index]) !== canonical(after[index])) return `message ${index} differs`;
+		const [was, now] = [canonical(before[index]), canonical(after[index])];
+		if (was !== now) return difference(`message ${index} differs`, was, now);
 	}
 	return undefined;
 }

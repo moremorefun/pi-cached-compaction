@@ -58,6 +58,38 @@ When it can't guarantee a cache hit, it says why and lets Pi's default compactio
 Cached compaction skipped (the prompt cache has expired). Using Pi's default compaction.
 ```
 
+### Checking what happened
+
+`/cached-compaction` shows the cache right now, whether the next compaction would use it, and this session's log:
+
+```
+pi-cached-compaction · opencode-go/gpt-6-luna
+cache: ⏱ 29m left (lifetime 30 min, OpenAI's minimum)
+next compaction: cached path; last request 4 s ago with 14 messages, 1 since. The request prefix is checked when it runs.
+before expiry: on, from 50k tokens of context · retention long
+log: ~/.pi/agent/cached-compaction.jsonl
+
+This session:
+11:48:34 /compact: cached, 83% of 2k from cache, 405 out, $0.0003 (last turn sent 2k), 4.8s, summary 669 chars
+11:48:34   saved, 2k tokens summarized
+11:48:40 /compact: Pi's default, request field "reasoning" differs
+11:48:47   Pi's default compaction saved: 0% of 964 from cache, 381 out, $0.0003, summary 1131 chars
+11:52:37 cache expires in 20s: not compacting, the context holds 2k tokens, under minContextTokens (50k)
+```
+
+Every session appends to `~/.pi/agent/cached-compaction.jsonl` (moved to `.1` past 5 MB). There's one line per compaction decision, with what triggered it, each check's result, the request settings, the provider's cache usage, and timing. Pi's saved result or failure gets its own line, and so does each compact-before-expiry decision. When the request prefix doesn't match, the line shows the text around the first difference:
+
+```json
+"reason": "request field \"reasoning\" differs",
+"mismatch": { "captured": "{\"effort\":\"high\",\"summary\":\"auto\"}", "rebuilt": "{\"effort\":\"low\",\"summary\":\"auto\"}" }
+```
+
+```sh
+jq -c 'select(.event == "compact") | {at, trigger, outcome, reason, cacheRead: .response.usage.cacheRead}' ~/.pi/agent/cached-compaction.jsonl
+```
+
+The log stays on your machine. A mismatch excerpt can include up to 200 characters of the conversation.
+
 ## What it costs
 
 Pi's default compaction sends only the messages it summarizes, as text, and cuts each tool result to 2,000 characters. It pays full price for all of it. This extension sends the whole session and pays the cache-read price for nearly all of it. Which one costs less depends on what the session holds. Measured with GPT through opencode-go, at the prices in Pi's model catalog:
@@ -116,7 +148,7 @@ Before anything is sent, the extension rebuilds the request with Pi's own serial
 
 It also steps aside when:
 
-- the model's declared cache lifetime has passed since the last request or cache-warming refresh, or the last successful request didn't use the cache. A cold cache makes the full prompt cost more than the default.
+- the model's declared cache lifetime has passed since the last request or cache-warming refresh, or the last successful request didn't use the cache (for example, a prompt under the provider's minimum cacheable length). A cold cache makes the full prompt cost more than the default.
 - compaction is recovering from a context overflow
 - the provider builds no HTTP payload Pi can see (other than pi-claude-bridge, below)
 - the API isn't a `messages` or `input` style payload (Anthropic, OpenAI Chat Completions, OpenAI Responses). Google isn't supported yet.

@@ -29,15 +29,15 @@ test("a request that only appends turns and moves the cache breakpoint matches",
 	assert.equal(prefixMismatch(captured, rebuilt, "messages"), undefined);
 });
 
-test("a changed prefix or request field is reported", () => {
+test("a changed prefix or request field is reported with the text around the change", () => {
 	const captured = { model: "m", messages: [{ role: "user", content: "hi" }] };
-	assert.equal(
+	assert.deepEqual(
 		prefixMismatch(captured, { model: "m", messages: [{ role: "user", content: "edited" }, { role: "user", content: "x" }] }, "messages"),
-		"message 0 differs",
+		{ reason: "message 0 differs", captured: '{"role":"user","content":"hi"}', rebuilt: '{"role":"user","content":"edited"}' },
 	);
-	assert.equal(
+	assert.deepEqual(
 		prefixMismatch(captured, { model: "other", messages: [...captured.messages, { role: "user", content: "x" }] }, "messages"),
-		'request field "model" differs',
+		{ reason: 'request field "model" differs', captured: '"m"', rebuilt: '"other"' },
 	);
 });
 
@@ -49,13 +49,13 @@ test("trailing messages are the branch entries after the captured transcript", (
 		{ type: "label", id: "l", parentId: "a", timestamp: "", targetId: "a", label: "x" } as SessionEntry,
 		entry("b", reply),
 	];
-	assert.deepEqual(trailingMessages(entries, [prompt]), [reply]);
+	assert.deepEqual(trailingMessages(entries, [prompt]), { messages: [reply] });
 });
 
 test("a field the provider keeps out of the cached prefix may differ only when named", () => {
 	const captured = { model: "gpt", tool_choice: "auto", input: [{ role: "user", content: "hi" }] };
 	const rebuilt = { ...captured, tool_choice: "none", input: [...captured.input, { role: "user", content: "summarize" }] };
-	assert.equal(prefixMismatch(captured, rebuilt, "input"), 'request field "tool_choice" differs');
+	assert.equal(prefixMismatch(captured, rebuilt, "input")?.reason, 'request field "tool_choice" differs');
 	assert.equal(prefixMismatch(captured, rebuilt, "input", new Set(["tool_choice"])), undefined);
 	// OpenAI's active reasoning effort trails the cache breakpoint and moves after the new turns.
 	const withEffort = { ...captured, input: [...captured.input, { type: "configuration_update", reasoning: { effort: "high" } }] };
@@ -63,12 +63,12 @@ test("a field the provider keeps out of the cached prefix may differ only when n
 });
 
 test("a branch that no longer contains the captured transcript is rejected", () => {
-	assert.equal(trailingMessages([entry("a", user("other branch", 5))], [user("fix the bug", 1)]), undefined);
+	assert.deepEqual(trailingMessages([entry("a", user("other branch", 5))], [user("fix the bug", 1)]), { reason: "its last message is no longer on this branch" });
 	const withSummary = [
 		entry("a", user("fix the bug", 1)),
 		{ type: "branch_summary", id: "s", parentId: "a", timestamp: "", summary: "...", fromId: "x" } as SessionEntry,
 	];
-	assert.equal(trailingMessages(withSummary, [user("fix the bug", 1)]), undefined);
+	assert.deepEqual(trailingMessages(withSummary, [user("fix the bug", 1)]), { reason: "a branch_summary entry came after it" });
 });
 
 test("a compaction entry the captured request already summarizes does not end the trailing messages", () => {
@@ -78,9 +78,9 @@ test("a compaction entry the captured request already summarizes does not end th
 	const compaction = (at: number) => ({ type: "compaction", id: `c${at}`, parentId: null, timestamp: new Date(at).toISOString(), summary: "s", firstKeptEntryId: "a", tokensBefore: 1 }) as SessionEntry;
 	const entries = [entry("a", user("fix the bug", 1)), entry("b", toolResult), compaction(3), entry("d", call)];
 	const summary = { role: "compactionSummary", summary: "s", tokensBefore: 1, timestamp: 3 } as AgentMessage;
-	assert.deepEqual(trailingMessages(entries, [summary, user("fix the bug", 1), toolResult]), [call]);
+	assert.deepEqual(trailingMessages(entries, [summary, user("fix the bug", 1), toolResult]), { messages: [call] });
 	// A request sent before that compaction does not carry its summary.
-	assert.equal(trailingMessages(entries, [user("fix the bug", 1), toolResult]), undefined);
+	assert.deepEqual(trailingMessages(entries, [user("fix the bug", 1), toolResult]), { reason: "a compaction entry came after it" });
 });
 
 test("cache expiry follows the latest cached request and cache-warming refreshes, and resets at compaction", () => {

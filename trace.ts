@@ -1,0 +1,138 @@
+import { appendFileSync, readFileSync, renameSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { formatTokens } from "./cached-request.ts";
+
+/** One JSON line per compaction decision, compaction outcome, and compact-before-expiry decision, for every session. */
+export const TRACE_PATH = join(getAgentDir(), "cached-compaction.jsonl");
+const MAX_TRACE_BYTES = 5_000_000;
+
+export type Trigger = "manual" | "threshold" | "overflow" | "expiry";
+
+export interface TraceUsage {
+	input: number;
+	cacheRead: number;
+	cacheWrite: number;
+	output: number;
+	cost: number;
+}
+
+/** What the extension decided in session_before_compact, with everything that decision rested on. */
+export interface CompactTrace {
+	event: "compact";
+	trigger: Trigger;
+	model: string;
+	/** "cached": this extension wrote the summary; "fallback": Pi's default runs; "cancelled": nothing runs. */
+	outcome: "cached" | "fallback" | "cancelled";
+	reason?: string;
+	mismatch?: { captured?: string; rebuilt?: string };
+	tokensBefore: number;
+	cwd: string;
+	sessionFile?: string;
+	lastRequest?: { secondsAgo: number; messages: number; promptTokens?: number; newMessages: number };
+	cache?: { lifetimeSeconds?: number; source?: string; expiresInSeconds?: number };
+	request?: { thinking: string; bridgeFork: boolean; toolChoiceNone: boolean; sharedPrefix: boolean };
+	response?: { stopReason: string; seconds: number; usage: TraceUsage; summaryChars: number; error?: string };
+}
+
+/** The compaction Pi saved, whichever path wrote it. */
+export interface ResultTrace {
+	event: "result";
+	trigger: Trigger;
+	by: "extension" | "pi";
+	entryId: string;
+	tokensBefore: number;
+	usage?: TraceUsage;
+	summaryChars: number;
+}
+
+export interface FailedTrace {
+	event: "failed";
+	trigger: Trigger;
+	aborted: boolean;
+	error?: string;
+}
+
+/** The timer's decision 20 seconds before the cache expires, with compactBeforeExpiry on. */
+export interface ExpiryTrace {
+	event: "expiry";
+	action: "compact" | "skip";
+	reason?: string;
+	secondsLeft: number;
+	contextTokens?: number;
+}
+
+export type TraceEvent = CompactTrace | ResultTrace | FailedTrace | ExpiryTrace;
+export type TraceRecord = TraceEvent & { at: string; session: string };
+
+export function appendTrace(record: TraceRecord): void {
+	try {
+		if (statSync(TRACE_PATH).size > MAX_TRACE_BYTES) renameSync(TRACE_PATH, `${TRACE_PATH}.1`);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	appendFileSync(TRACE_PATH, `${JSON.stringify(record)}\n`);
+}
+
+export function readTraces(session: string, limit: number): TraceRecord[] {
+	let text: string;
+	try {
+		text = readFileSync(TRACE_PATH, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+	const records: TraceRecord[] = [];
+	for (const line of text.split("\n")) {
+		if (!line) continue;
+		// A line cut short by a crash mid-write is skipped; the rest of the log is still readable.
+		try {
+			const record = JSON.parse(line) as TraceRecord;
+			if (record.session === session) records.push(record);
+		} catch {}
+	}
+	return records.slice(-limit);
+}
+
+const TRIGGER_LABELS: Record<Trigger, string> = {
+	manual: "/compact",
+	threshold: "auto-compaction",
+	overflow: "overflow recovery",
+	expiry: "compact before expiry",
+};
+
+function cacheShare(usage: TraceUsage): string {
+	const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+	const pct = prompt > 0 ? Math.floor((100 * usage.cacheRead) / prompt) : 0;
+	return `${pct}% of ${formatTokens(prompt)} from cache, ${formatTokens(usage.output)} out, $${usage.cost.toFixed(4)}`;
+}
+
+/** One line for /cached-compaction. */
+export function describeTrace(record: TraceRecord): string {
+	const time = new Date(record.at).toLocaleTimeString([], { hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+	switch (record.event) {
+		case "compact": {
+			const what = TRIGGER_LABELS[record.trigger];
+			if (record.outcome === "cached" && record.response) {
+				const { usage, seconds, summaryChars } = record.response;
+				const sent = record.lastRequest?.promptTokens;
+				return `${time} ${what}: cached, ${cacheShare(usage)}${sent ? ` (last turn sent ${formatTokens(sent)})` : ""}, ${seconds.toFixed(1)}s, summary ${summaryChars} chars`;
+			}
+			const then = record.outcome === "fallback" ? "Pi's default" : "cancelled";
+			const usage = record.response?.usage;
+			const spent = usage && usage.input + usage.cacheRead + usage.cacheWrite > 0 ? ` (the summary request used ${cacheShare(usage)})` : "";
+			return `${time} ${what}: ${then}, ${record.reason}${spent}`;
+		}
+		case "result":
+			return record.by === "pi"
+				? `${time}   Pi's default compaction saved${record.usage ? `: ${cacheShare(record.usage)}` : ""}, summary ${record.summaryChars} chars`
+				: `${time}   saved, ${formatTokens(record.tokensBefore)} tokens summarized`;
+		case "failed":
+			// Pi can fail before session_before_compact runs ("Nothing to compact"), so this line names its trigger.
+			return `${time} ${TRIGGER_LABELS[record.trigger]}: ${record.aborted ? "aborted" : (record.error ?? "failed")}`;
+		case "expiry":
+			return record.action === "compact"
+				? `${time} cache expires in ${record.secondsLeft}s: compacting ${formatTokens(record.contextTokens ?? 0)} tokens`
+				: `${time} cache expires in ${record.secondsLeft}s: not compacting, ${record.reason}`;
+	}
+}
