@@ -46,16 +46,26 @@ Put this folder in `~/.pi/agent/extensions/pi-cached-compaction` (or install it 
 
 ## What you'll see
 
-On `/compact` or automatic compaction, a notice reports the cache hit:
+After each compaction, a card below the summary shows which path ran and what the cache returned. It's saved with the session, so it's still there after a resume, and it's never sent to the model:
 
 ```
-Cached compaction: 95% of 190k prompt tokens came from the cache.
+cached compaction  (ctrl+o for details)
+13:48:46 /compact: cached, 83% of 2k from cache, 405 out, $0.0003 (last turn sent 2k), 5.4s, summary 634 chars
+13:48:46   saved, 2k tokens summarized
 ```
 
-When it can't guarantee a cache hit, it says why and lets Pi's default compaction run:
+When it can't guarantee a cache hit, the card says why and shows what Pi's default compaction did instead. Expanding it (ctrl+o) adds what the decision rested on:
 
 ```
-Cached compaction skipped (the prompt cache has expired). Using Pi's default compaction.
+cached compaction
+13:48:54 /compact: Pi's default, request field "reasoning" differs
+         cache: lifetime 30 min (OpenAI's minimum), 30 min left
+         last request: 4 s ago, 20 messages, 2k prompt tokens, 1 new since
+         request: thinking low, shared 12h prefix
+         last request had: {"effort":"high","summary":"auto"}
+         summary request had: {"effort":"low","summary":"auto"}
+13:48:59   Pi's default compaction saved: 0% of 923 from cache, 384 out, $0.0003, summary 1243 chars
+log: ~/.pi/agent/cached-compaction.jsonl
 ```
 
 ### Checking what happened
@@ -155,7 +165,7 @@ It also steps aside when:
 
 ## With pi-claude-bridge
 
-`pi-claude/*` models run in Claude Code, so there's no payload to compare. Instead, the extension sends the summary request with the bridge's `x-claude-bridge-fork: 1` header. The bridge runs it on a copy of the live Claude Code conversation, which reads its prompt cache, and deletes the copy afterwards. The live conversation is only read. If the bridge can't copy the conversation, it imports the history instead, and the notice reports the missing cache hit.
+`pi-claude/*` models run in Claude Code, so there's no payload to compare. Instead, the extension sends the summary request with the bridge's `x-claude-bridge-fork: 1` header. The bridge runs it on a copy of the live Claude Code conversation, which reads its prompt cache, and deletes the copy afterwards. The live conversation is only read. If the bridge can't copy the conversation, it imports the history instead, and the card reports the missing cache hit.
 
 Measured on `pi-claude/claude-haiku-4-5` after three turns: 10,793 of 11,437 prompt tokens came from the cache, the main Claude Code transcript was unchanged, and the copy was deleted. Claude Code reports a 1-hour cache on a subscription, so the countdown shows `⏱ 59m`. The request is also marked as a one-shot, so a bridge without fork support runs it apart from the live conversation: the summary still works, just without the cache hit.
 

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import { convertToLlm, getLatestCompactionEntry, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, getLatestCompactionEntry, keyHint, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import {
 	cacheExpiresAt,
 	formatRemaining,
@@ -18,7 +18,20 @@ import {
 	type PrefixMismatch,
 } from "./cached-request.ts";
 import { loadConfig } from "./config.ts";
-import { appendTrace, describeTrace, readTraces, TRACE_PATH, type CompactTrace, type TraceEvent, type TraceUsage, type Trigger } from "./trace.ts";
+import {
+	appendTrace,
+	describeTrace,
+	formatDuration,
+	readTraces,
+	TRACE_PATH,
+	TRACE_PATH_LABEL,
+	traceDetails,
+	type CompactTrace,
+	type TraceEvent,
+	type TraceRecord,
+	type TraceUsage,
+	type Trigger,
+} from "./trace.ts";
 
 interface CapturedRequest {
 	transcript: AgentMessage[];
@@ -38,6 +51,8 @@ interface CachedPath {
 }
 
 const STATUS_KEY = "cached-compaction";
+/** Session entry for the inline card: shown in the chat, never sent to the model. */
+const CARD_TYPE = "cached-compaction";
 const PREFIX_MISMATCH = "pi-cached-compaction: request prefix differs from the cached request";
 /** The Claude bridge's provider API. Its requests run in Claude Code, so Pi never sees a payload. */
 const BRIDGE_API = "claude-bridge";
@@ -127,17 +142,36 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 	let expiryCompaction = false;
 	/** What started the compaction in progress, so its outcome is logged against the same trigger. */
 	let compactionTrigger: Trigger | undefined;
+	/** This extension's decision for the compaction in progress, shown in the card with its outcome. */
+	let decision: (CompactTrace & { at: string; session: string }) | undefined;
 	let traceError: string | undefined;
 
-	const trace = (ctx: ExtensionContext, event: TraceEvent) => {
+	const trace = <E extends TraceEvent>(ctx: ExtensionContext, event: E) => {
+		const record = { ...event, at: new Date().toISOString(), session: ctx.sessionManager.getSessionId() };
 		try {
-			appendTrace({ ...event, at: new Date().toISOString(), session: ctx.sessionManager.getSessionId() });
+			appendTrace(record);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (ctx.hasUI && message !== traceError) ctx.ui.notify(`pi-cached-compaction could not write ${TRACE_PATH}: ${message}`, "warning");
 			traceError = message;
 		}
+		return record;
 	};
+
+	pi.registerEntryRenderer<{ records: TraceRecord[] }>(CARD_TYPE, (entry, { expanded }, theme) => {
+		const records = entry.data?.records;
+		if (!records?.length) return undefined;
+		const lines = [`${theme.fg("accent", "cached compaction")}${expanded ? "" : `  ${theme.fg("muted", "(")}${keyHint("app.tools.expand", "for details")}${theme.fg("muted", ")")}`}`];
+		for (const record of records) {
+			const line = describeTrace(record);
+			const missed = record.event === "failed" || (record.event === "compact" && (record.outcome !== "cached" || record.response?.usage.cacheRead === 0));
+			lines.push(missed ? theme.fg("warning", line) : line);
+			if (expanded && record.event === "compact") lines.push(...traceDetails(record).map((detail) => theme.fg("dim", `         ${detail}`)));
+		}
+		if (expanded) lines.push(theme.fg("dim", `log: ${TRACE_PATH_LABEL}`));
+		return new Text(lines.join("\n"), 1, 0);
+	});
+	const showCard = (records: TraceRecord[]) => pi.appendEntry<{ records: TraceRecord[] }>(CARD_TYPE, { records });
 
 	const stopTimer = (ctx: ExtensionContext) => {
 		if (ticker) clearInterval(ticker);
@@ -243,7 +277,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 	pi.on("agent_settled", (_event, ctx) => startTimer(ctx));
 	pi.on("session_compact", (event, ctx) => {
 		const entry = event.compactionEntry;
-		trace(ctx, {
+		const result = trace(ctx, {
 			event: "result",
 			trigger: compactionTrigger ?? event.reason,
 			by: event.fromExtension ? "extension" : "pi",
@@ -252,11 +286,20 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			usage: entry.usage ? traceUsage(entry.usage) : undefined,
 			summaryChars: entry.summary.length,
 		});
+		// Interactive mode redraws the chat on compaction_end, which Pi emits after this handler
+		// returns; a card appended now would be drawn above the summary.
+		const records = decision ? [decision, result] : [result];
+		setTimeout(() => showCard(records), 0);
+		decision = undefined;
 		compactionTrigger = undefined;
 		forget(ctx);
 	});
 	pi.on("session_compact_failed", (event, ctx) => {
-		trace(ctx, { event: "failed", trigger: compactionTrigger ?? event.reason, aborted: event.aborted, error: event.errorMessage });
+		const failed = trace(ctx, { event: "failed", trigger: compactionTrigger ?? event.reason, aborted: event.aborted, error: event.errorMessage });
+		// Without a decision Pi failed before this extension ran ("Nothing to compact") and shows its own error.
+		// A cancel this extension chose reaches Pi as an abort, which the decision line already explains.
+		if (decision) showCard(decision.outcome === "cancelled" && event.aborted ? [decision] : [decision, failed]);
+		decision = undefined;
 		compactionTrigger = undefined;
 	});
 	pi.on("model_select", (_event, ctx) => forget(ctx));
@@ -301,15 +344,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		};
 		const fallBack = (reason: string, mismatch?: PrefixMismatch) => {
 			const diff = mismatch?.captured === undefined ? undefined : { captured: mismatch.captured, rebuilt: mismatch.rebuilt };
-			trace(ctx, { ...record, outcome: fromExpiry ? "cancelled" : "fallback", reason, mismatch: diff });
-			if (ctx.hasUI) {
-				ctx.ui.notify(
-					fromExpiry
-						? `Skipped compacting before cache expiry (${reason}).`
-						: `Cached compaction skipped (${reason}). Using Pi's default compaction.`,
-					"info",
-				);
-			}
+			decision = trace(ctx, { ...record, outcome: fromExpiry ? "cancelled" : "fallback", reason, mismatch: diff });
 			return fromExpiry ? { cancel: true } : undefined;
 		};
 		if (event.reason === "overflow") return fallBack("the last request overflowed the context window");
@@ -391,7 +426,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		};
 
 		if (response.stopReason === "aborted") {
-			trace(ctx, { ...record, outcome: "cancelled", reason: "the compaction was aborted" });
+			decision = trace(ctx, { ...record, outcome: "cancelled", reason: "the compaction was aborted" });
 			return { cancel: true };
 		}
 		if (mismatch) return fallBack(mismatch.reason, mismatch);
@@ -415,17 +450,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			modifiedFiles.length > 0 ? `<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>` : "",
 		].filter(Boolean);
 
-		trace(ctx, record);
-		const { cacheRead, cacheWrite, input } = response.usage;
-		const promptTokens = cacheRead + cacheWrite + input;
-		if (ctx.hasUI) {
-			ctx.ui.notify(
-				cacheRead > 0
-					? `Cached compaction: ${Math.floor((100 * cacheRead) / promptTokens)}% of ${formatTokens(promptTokens)} prompt tokens came from the cache.`
-					: "Cached compaction finished without a cache hit; the prompt cache had likely expired.",
-				cacheRead > 0 ? "info" : "warning",
-			);
-		}
+		decision = trace(ctx, record);
 
 		return {
 			compaction: {
@@ -443,7 +468,6 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			const entries = ctx.sessionManager.getBranch();
 			const model = ctx.model;
-			const duration = (ms: number) => (ms >= 120_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
 			const lifetime = model ? cacheLifetime(model, entries) : undefined;
 			const expiresAt = lifetime ? cacheExpiresAt(entries, lifetime.ms) : undefined;
 			const replied = entries
@@ -452,12 +476,12 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			const cache = !lifetime
 				? "lifetime unknown, so no countdown"
 				: expiresAt === undefined
-					? `${replied ? "the last request used no cache" : "no request since the session started or compacted"} (lifetime ${duration(lifetime.ms)}, ${lifetime.source})`
-					: `${expiresAt > Date.now() ? `${formatRemaining(expiresAt - Date.now())} left` : "expired"} (lifetime ${duration(lifetime.ms)}, ${lifetime.source})`;
+					? `${replied ? "the last request used no cache" : "no request since the session started or compacted"} (lifetime ${formatDuration(lifetime.ms)}, ${lifetime.source})`
+					: `${expiresAt > Date.now() ? `${formatRemaining(expiresAt - Date.now())} left` : "expired"} (lifetime ${formatDuration(lifetime.ms)}, ${lifetime.source})`;
 			const check = checkCachedPath(entries, model);
 			const next = "reason" in check
 				? `Pi's default, because ${check.reason}`
-				: `cached path; last request ${duration(Date.now() - check.request.at)} ago with ${check.request.transcript.length} messages, ${check.trailing.length} since. The request prefix is checked when it runs.`;
+				: `cached path; last request ${formatDuration(Date.now() - check.request.at)} ago with ${check.request.transcript.length} messages, ${check.trailing.length} since. The request prefix is checked when it runs.`;
 			let log: string[];
 			try {
 				const records = readTraces(ctx.sessionManager.getSessionId(), 12);
@@ -465,14 +489,13 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			} catch (error) {
 				log = [`Could not read the log: ${error instanceof Error ? error.message : String(error)}`];
 			}
-			const logPath = TRACE_PATH.startsWith(homedir()) ? `~${TRACE_PATH.slice(homedir().length)}` : TRACE_PATH;
 			ctx.ui.notify(
 				[
 					`pi-cached-compaction · ${model ? `${model.provider}/${model.id}` : "no model"}`,
 					`cache: ${cache}`,
 					`next compaction: ${next}`,
 					`before expiry: ${config.compactBeforeExpiry ? `on, from ${formatTokens(config.minContextTokens)} tokens of context` : "off"} · retention ${process.env.PI_CACHE_RETENTION ?? "short"}`,
-					`log: ${logPath}`,
+					`log: ${TRACE_PATH_LABEL}`,
 					"",
 					...log,
 				].join("\n"),

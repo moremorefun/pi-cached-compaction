@@ -1,10 +1,12 @@
 import { appendFileSync, readFileSync, renameSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { formatTokens } from "./cached-request.ts";
 
 /** One JSON line per compaction decision, compaction outcome, and compact-before-expiry decision, for every session. */
 export const TRACE_PATH = join(getAgentDir(), "cached-compaction.jsonl");
+export const TRACE_PATH_LABEL = TRACE_PATH.startsWith(homedir()) ? `~${TRACE_PATH.slice(homedir().length)}` : TRACE_PATH;
 const MAX_TRACE_BYTES = 5_000_000;
 
 export type Trigger = "manual" | "threshold" | "overflow" | "expiry";
@@ -107,7 +109,11 @@ function cacheShare(usage: TraceUsage): string {
 	return `${pct}% of ${formatTokens(prompt)} from cache, ${formatTokens(usage.output)} out, $${usage.cost.toFixed(4)}`;
 }
 
-/** One line for /cached-compaction. */
+export function formatDuration(ms: number): string {
+	return ms >= 120_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`;
+}
+
+/** One line for /cached-compaction and the inline card. */
 export function describeTrace(record: TraceRecord): string {
 	const time = new Date(record.at).toLocaleTimeString([], { hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 	switch (record.event) {
@@ -135,4 +141,30 @@ export function describeTrace(record: TraceRecord): string {
 				? `${time} cache expires in ${record.secondsLeft}s: compacting ${formatTokens(record.contextTokens ?? 0)} tokens`
 				: `${time} cache expires in ${record.secondsLeft}s: not compacting, ${record.reason}`;
 	}
+}
+
+/** What a compaction decision rested on, for the inline card's expanded view. */
+export function traceDetails(record: CompactTrace): string[] {
+	const lines: string[] = [];
+	const { cache, lastRequest, request, response, mismatch } = record;
+	if (cache) {
+		const lifetime = cache.lifetimeSeconds === undefined ? "lifetime unknown" : `lifetime ${formatDuration(cache.lifetimeSeconds * 1000)} (${cache.source})`;
+		const left = cache.expiresInSeconds === undefined ? "" : `, ${formatDuration(cache.expiresInSeconds * 1000)} left`;
+		lines.push(`cache: ${lifetime}${left}`);
+	}
+	if (lastRequest) {
+		const sent = lastRequest.promptTokens ? `, ${formatTokens(lastRequest.promptTokens)} prompt tokens` : "";
+		lines.push(`last request: ${formatDuration(lastRequest.secondsAgo * 1000)} ago, ${lastRequest.messages} messages${sent}, ${lastRequest.newMessages} new since`);
+	}
+	if (request) {
+		const extras = [
+			request.sharedPrefix ? "shared 12h prefix" : "",
+			request.toolChoiceNone ? "tool_choice none" : "",
+			request.bridgeFork ? "Claude Code fork" : "",
+		].filter(Boolean);
+		lines.push(`request: thinking ${request.thinking}${extras.map((extra) => `, ${extra}`).join("")}`);
+	}
+	if (response?.error) lines.push(`error: ${response.error}`);
+	if (mismatch?.captured !== undefined) lines.push(`last request had: ${mismatch.captured}`, `summary request had: ${mismatch.rebuilt ?? "(nothing)"}`);
+	return lines;
 }
