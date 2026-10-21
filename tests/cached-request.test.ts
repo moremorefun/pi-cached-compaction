@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { cacheExpiresAt, prefixMismatch, trailingMessages } from "../cached-request.ts";
+import { cacheExpiresAt, prefixMismatch, reportedCacheTier, trailingMessages } from "../cached-request.ts";
 
 const user = (text: string, timestamp: number) => ({ role: "user", content: text, timestamp }) as AgentMessage;
 const entry = (id: string, message: AgentMessage) => ({ type: "message", id, parentId: null, timestamp: "", message }) as SessionEntry;
@@ -73,4 +73,16 @@ test("cache expiry follows the latest cached request and cache-warming refreshes
 	const failed = { ...assistant(9_000, 0), stopReason: "error" } as AgentMessage;
 	assert.equal(cacheExpiresAt([entry("a", assistant(1_000, 500)), entry("b", failed)], 300_000), 301_000);
 	assert.equal(cacheExpiresAt([entry("a", assistant(1_000, 500)), compaction], 300_000), undefined);
+});
+
+test("the cache tier comes from the latest write that reports its 1-hour share", () => {
+	const wrote = (id: string, cacheWrite: number, cacheWrite1h?: number) =>
+		entry(id, { role: "assistant", content: [], timestamp: 1, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite, ...(cacheWrite1h === undefined ? {} : { cacheWrite1h }) } } as unknown as AgentMessage);
+	const compaction = { type: "compaction", id: "c", parentId: null, timestamp: "" } as SessionEntry;
+
+	assert.equal(reportedCacheTier([wrote("a", 500, 500)]), "long");
+	assert.equal(reportedCacheTier([wrote("a", 500, 500), wrote("b", 40, 0)]), "short");
+	assert.equal(reportedCacheTier([wrote("a", 500, 500), wrote("b", 0, 0)]), "long", "a turn that only read keeps the tier");
+	assert.equal(reportedCacheTier([wrote("a", 500)]), undefined, "a provider that does not report the share gives no tier");
+	assert.equal(reportedCacheTier([wrote("a", 500, 500), compaction]), undefined);
 });

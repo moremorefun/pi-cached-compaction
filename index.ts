@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { convertToLlm, getLatestCompactionEntry, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, getLatestCompactionEntry, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
 	cacheExpiresAt,
 	formatRemaining,
@@ -8,6 +8,7 @@ import {
 	messageArrayKey,
 	entryPreview,
 	prefixMismatch,
+	reportedCacheTier,
 	summaryInstruction,
 	trailingMessages,
 } from "./cached-request.ts";
@@ -15,12 +16,19 @@ import { loadConfig } from "./config.ts";
 
 interface CapturedRequest {
 	transcript: AgentMessage[];
-	payload: Record<string, unknown>;
+	/** The provider payload, compared before sending. Absent for the Claude bridge, which builds no payload Pi sees and checks the prefix itself. */
+	payload?: Record<string, unknown>;
 	model: Model<Api>;
 }
 
 const STATUS_KEY = "cached-compaction";
 const PREFIX_MISMATCH = "pi-cached-compaction: request prefix differs from the cached request";
+/** The Claude bridge's provider API. Its requests run in Claude Code, so Pi never sees a payload. */
+const BRIDGE_API = "claude-bridge";
+/** The bridge's documented header for running one request on a copy of the live Claude Code conversation. */
+const FORK_REQUEST_HEADER = "x-claude-bridge-fork";
+/** Anthropic's cache lifetimes, for a provider that reports the tier it wrote but declares no lifetime (the Claude bridge). */
+const REPORTED_TIER_SECONDS = { short: 300, long: 3600 } as const;
 /** How long before expiry the idle compaction starts, leaving time for the request to reach the provider. */
 const EXPIRY_LEAD_MS = 20_000;
 const WARNING_MS = 30_000;
@@ -33,9 +41,14 @@ function formatTokens(count: number): string {
 	return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count);
 }
 
-/** Cache lifetime for the retention tier Pi's providers will request, when the model declares one. */
-function cacheTtlMs(model: Model<Api>): number | undefined {
-	const seconds = model.promptCache?.[process.env.PI_CACHE_RETENTION === "long" ? "long" : "short"];
+/**
+ * Cache lifetime of the branch's conversation: the tier its latest cache write reported, else the
+ * tier PI_CACHE_RETENTION asks providers for. Undefined when neither the model nor the report gives a lifetime.
+ */
+function cacheTtlMs(model: Model<Api>, entries: SessionEntry[]): number | undefined {
+	const reported = reportedCacheTier(entries);
+	const tier = reported ?? (process.env.PI_CACHE_RETENTION === "long" ? "long" : "short");
+	const seconds = model.promptCache?.[tier] ?? (reported ? REPORTED_TIER_SECONDS[reported] : undefined);
 	return seconds === undefined ? undefined : seconds * 1000;
 }
 
@@ -98,7 +111,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 
 	const startTimer = (ctx: ExtensionContext) => {
 		stopTimer(ctx);
-		const ttlMs = ctx.model ? cacheTtlMs(ctx.model) : undefined;
+		const ttlMs = ctx.model ? cacheTtlMs(ctx.model, ctx.sessionManager.getBranch()) : undefined;
 		if (ttlMs === undefined) return;
 		let expiresAt = cacheExpiresAt(ctx.sessionManager.getBranch(), ttlMs);
 		if (expiresAt === undefined) return;
@@ -140,8 +153,11 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		if (!transcript || !ctx.model || !isPayload(event.payload)) return;
 		captured = { transcript, payload: event.payload, model: ctx.model };
 	});
-	pi.on("message_start", () => {
+	pi.on("message_start", (event, ctx) => {
+		const transcript = pendingTranscript;
 		pendingTranscript = undefined;
+		// The bridge never sends a payload, so its request is captured once its reply starts.
+		if (transcript && event.message.role === "assistant" && ctx.model?.api === BRIDGE_API) captured = { transcript, model: ctx.model };
 	});
 	pi.on("session_start", (_event, ctx) => {
 		// Providers read PI_CACHE_RETENTION on every request, so this runs before the session's first one.
@@ -178,12 +194,12 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		if (ctx.model?.provider !== request.model.provider || ctx.model.id !== request.model.id) {
 			return fallBack("the model changed since the last request");
 		}
-		const key = messageArrayKey(request.payload);
-		if (!key) return fallBack(`${request.model.api} requests are not supported`);
+		const key = request.payload ? messageArrayKey(request.payload) : undefined;
+		if (request.payload && !key) return fallBack(`${request.model.api} requests are not supported`);
 		const trailing = trailingMessages(event.branchEntries, request.transcript);
 		if (!trailing) return fallBack("the conversation changed since the last request");
 		// A cold cache makes the full prompt cost more than Pi's default, which sends only the summarized messages.
-		const ttlMs = cacheTtlMs(request.model);
+		const ttlMs = cacheTtlMs(request.model, event.branchEntries);
 		if (ttlMs !== undefined) {
 			const expiresAt = cacheExpiresAt(event.branchEntries, ttlMs);
 			if (expiresAt === undefined) return fallBack("the last request did not use the prompt cache");
@@ -200,26 +216,37 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		};
 
 		// Same model, thinking level, and session id as the agent, so Pi serializes the same prefix.
-		// onPayload proves it against the captured request before anything is sent.
+		// onPayload proves it against the captured request before anything is sent. The bridge has no
+		// payload to compare: the header makes it copy the live Claude Code conversation instead.
 		let mismatch: string | undefined;
 		const thinkingLevel = pi.getThinkingLevel();
+		const payload = request.payload;
+		const controller = new AbortController();
 		const response = await ctx.modelRegistry
 			.streamSimple(request.model, { messages: convertToLlm([...request.transcript, ...trailing, instruction]) }, {
 				reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
 				sessionId: ctx.sessionManager.getSessionId(),
-				signal: event.signal,
-				onPayload: (params) => {
-					mismatch = isPayload(params) ? prefixMismatch(request.payload, params, key) : "the provider payload is not an object";
-					if (mismatch) throw new Error(PREFIX_MISMATCH);
-					return undefined;
-				},
+				signal: AbortSignal.any([event.signal, controller.signal]),
+				...(payload && key
+					? {
+						onPayload: (params: unknown) => {
+							mismatch = isPayload(params) ? prefixMismatch(payload, params, key) : "the provider payload is not an object";
+							if (mismatch) throw new Error(PREFIX_MISMATCH);
+							return undefined;
+						},
+					}
+					// "none" marks a one-shot, which a bridge without fork requests runs apart from the session.
+					: { headers: { [FORK_REQUEST_HEADER]: "1" }, cacheRetention: "none" as const }),
 			})
 			.result();
+		// A bridge query that called a tool waits for its result; aborting ends it.
+		if (response.stopReason === "toolUse") controller.abort();
 
 		if (response.stopReason === "aborted") return { cancel: true };
 		if (mismatch) return fallBack(mismatch);
 		if (response.stopReason === "error") return fallBack(response.errorMessage ?? "the summary request failed");
 		if (response.stopReason === "length") return fallBack("the summary hit the output limit");
+		if (response.stopReason === "toolUse") return fallBack("the model called a tool instead of writing the summary");
 		const summary = response.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n").trim();
 		if (!summary) return fallBack("the model returned no summary text");
 

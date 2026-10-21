@@ -60,6 +60,24 @@ export function cacheExpiresAt(entries: SessionEntry[], ttlMs: number): number |
 	return refreshedAt === undefined ? undefined : refreshedAt + ttlMs;
 }
 
+/**
+ * The cache tier the branch's latest cache write used, as the provider reported it: Pi's
+ * Anthropic provider and the Claude bridge give the 1-hour share of a write as `cacheWrite1h`.
+ * Undefined when no write since the last compaction reports it.
+ */
+export function reportedCacheTier(entries: SessionEntry[]): "short" | "long" | undefined {
+	let tier: "short" | "long" | undefined;
+	for (const entry of entries) {
+		if (entry.type === "compaction") {
+			tier = undefined;
+		} else if (entry.type === "message" && entry.message.role === "assistant") {
+			const { cacheWrite, cacheWrite1h } = entry.message.usage;
+			if (cacheWrite > 0 && cacheWrite1h !== undefined) tier = cacheWrite1h > 0 ? "long" : "short";
+		}
+	}
+	return tier;
+}
+
 export function formatRemaining(ms: number): string {
 	if (ms <= 0) return "cache cold";
 	const seconds = Math.ceil(ms / 1000);

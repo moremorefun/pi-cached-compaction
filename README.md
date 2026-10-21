@@ -86,7 +86,7 @@ The choice is made once per session because a cache can't move up a tier cheaply
 
 So "5 minutes while working, 1 hour when idle" costs more than choosing 1 hour from the start. With the 1-hour cache, Pi's own cache warmer rarely fires, which is fine: it stops after 30 idle minutes, before a 1-hour cache needs a refresh.
 
-While Pi is idle, the footer shows how long the cache has left: `⏱ 42m`, then `⏱ 0:45`, turning to the warning color in the last 30 seconds and to `cache cold` once it expires. The countdown needs a model that declares its cache lifetime, which today means Pi's built-in Anthropic models. In powerline-footer it shows in the `extension_statuses` segment.
+While Pi is idle, the footer shows how long the cache has left: `⏱ 42m`, then `⏱ 0:45`, turning to the warning color in the last 30 seconds and to `cache cold` once it expires. The lifetime comes from the cache tier the provider reports it wrote (Pi's Anthropic provider and pi-claude-bridge report it), else from the model's declared lifetime. Other providers show no countdown. In powerline-footer it shows in the `extension_statuses` segment.
 
 With `compactBeforeExpiry` on, Pi compacts 20 seconds before the cache expires, but only when it's idle, nothing is queued, the context holds at least `minContextTokens` tokens, and the cached path is available. Otherwise nothing happens. Sending a message resets the timer. The threshold is in tokens rather than percent because the cost of rewriting an expired cache depends on its size, and on 1M-token models a percentage would almost never trigger.
 
@@ -117,8 +117,14 @@ It also steps aside when:
 
 - the model's declared cache lifetime has passed since the last request or cache-warming refresh, or the last successful request didn't use the cache. A cold cache makes the full prompt cost more than the default.
 - compaction is recovering from a context overflow
-- the provider doesn't build an HTTP payload Pi can see, such as the `pi-claude` Claude Code bridge
+- the provider builds no HTTP payload Pi can see (other than pi-claude-bridge, below)
 - the API isn't a `messages` or `input` style payload (Anthropic, OpenAI Chat Completions, OpenAI Responses). Google isn't supported yet.
+
+## With pi-claude-bridge
+
+`pi-claude/*` models run in Claude Code, so there's no payload to compare. Instead, the extension sends the summary request with the bridge's `x-claude-bridge-fork: 1` header. The bridge runs it on a copy of the live Claude Code conversation, which reads its prompt cache, and deletes the copy afterwards. The live conversation is only read. If the bridge can't copy the conversation, it imports the history instead, and the notice reports the missing cache hit.
+
+Measured on `pi-claude/claude-haiku-4-5` after three turns: 10,793 of 11,437 prompt tokens came from the cache, the main Claude Code transcript was unchanged, and the copy was deleted. Claude Code reports a 1-hour cache on a subscription, so the countdown shows `⏱ 59m`. The request is also marked as a one-shot, so a bridge without fork support runs it apart from the live conversation: the summary still works, just without the cache hit.
 
 ## Limitations
 
