@@ -126,7 +126,24 @@ It also steps aside when:
 
 Measured on `pi-claude/claude-haiku-4-5` after three turns: 10,793 of 11,437 prompt tokens came from the cache, the main Claude Code transcript was unchanged, and the copy was deleted. Claude Code reports a 1-hour cache on a subscription, so the countdown shows `⏱ 59m`. The request is also marked as a one-shot, so a bridge without fork support runs it apart from the live conversation: the summary still works, just without the cache hit.
 
+## With OpenAI models
+
+OpenAI caches the same way in principle (a matching prefix reads at 0.1×, or 0.05× on GPT-6.1 Sol), with a few differences the extension follows:
+
+```
+                    GPT-5.6 and later           earlier GPT models
+lifetime            at least 30 min (default)   "typically" 5-10 min, or ~30 min with 24h retention
+long retention      Pi keeps 30 min (no 12h)    24h, no write charge
+countdown           ⏱ shown (30 min)            none (no guaranteed lifetime)
+```
+
+- On the `openai` provider the summary request sets `tool_choice: "none"`. OpenAI keeps `tool_choice` out of the cached prefix and recommends it for exactly this, so the model can't call a tool and the cache still matches. The prefix check ignores that one field and nothing else.
+- GPT-6 models carry the reasoning effort as a trailing `configuration_update` item. It sits after the cache breakpoint, so the check treats it like Anthropic's trailing effort message.
+- On `openai-codex` (ChatGPT sign-in), the request is left exactly as Pi builds it and no countdown is shown: that backend documents no cache lifetime.
+
+Checked against Pi's own OpenAI serializer for `gpt-6.1-sol` and `gpt-5.5`: the summary request matches the previous request's prefix, and `tool_choice` is the only other field that changes. It hasn't been run against the live OpenAI API yet.
+
 ## Limitations
 
-- The model sees your tools during the summary request and is told not to call them. If it replies with no summary text, Pi's default compaction runs.
+- On Anthropic and pi-claude-bridge, the model sees your tools during the summary request and is told not to call them, because changing `tool_choice` there would discard the message cache. If it calls a tool or replies with no summary text, Pi's default compaction runs.
 - If another extension rewrites provider payloads after this one, the request can miss the cache. The summary is still correct, it just costs about what the default would.
