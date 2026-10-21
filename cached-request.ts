@@ -39,6 +39,32 @@ export function trailingMessages(entries: SessionEntry[], transcript: AgentMessa
 	return trailing;
 }
 
+/**
+ * When the prompt cache written by the branch's latest request expires, or undefined when no
+ * request since the last compaction used the cache. Pi's cache warmer records each refresh as a usage entry.
+ */
+export function cacheExpiresAt(entries: SessionEntry[], ttlMs: number): number | undefined {
+	let refreshedAt: number | undefined;
+	for (const entry of entries) {
+		if (entry.type === "compaction") {
+			refreshedAt = undefined;
+		} else if (entry.type === "message" && entry.message.role === "assistant") {
+			const { cacheRead, cacheWrite } = entry.message.usage;
+			refreshedAt = cacheRead + cacheWrite > 0 ? entry.message.timestamp : undefined;
+		} else if (entry.type === "usage" && entry.kind === "cache_warm" && refreshedAt !== undefined) {
+			refreshedAt = Math.max(refreshedAt, Date.parse(entry.timestamp));
+		}
+	}
+	return refreshedAt === undefined ? undefined : refreshedAt + ttlMs;
+}
+
+export function formatRemaining(ms: number): string {
+	if (ms <= 0) return "cache cold";
+	const seconds = Math.ceil(ms / 1000);
+	if (seconds >= 120) return `⏱ ${Math.floor(seconds / 60)}m`;
+	return `⏱ ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
 function canonical(value: unknown): string {
 	// Pi moves the cache breakpoint to the newest message on every request; it is not part of the cached content.
 	return JSON.stringify(value, (key, field) => (key === "cache_control" ? undefined : field)) ?? "undefined";

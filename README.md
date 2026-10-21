@@ -37,6 +37,26 @@ Measured on `opencode-go/kimi-k2.6` with a 9k-token session (most of it Pi's sys
 
 In a small session like this one, the default sends fewer tokens, because it skips the system prompt, the tools, and the recent messages. The savings grow with the session. When compaction runs near the context limit, the default pays full price for the whole summarized history, while this extension pays the cache-read price for nearly all of it.
 
+## Cache timer and compacting before expiry
+
+The extension turns on Pi's long cache retention (`PI_CACHE_RETENTION=long`) unless you've set that variable yourself. Anthropic caches then last 1 hour instead of 5 minutes, and OpenAI caches 24 hours. Anthropic charges 2× input price to write a 1-hour cache instead of 1.25×, and reads cost the same.
+
+While Pi is idle, the footer shows how long the cache has left: `⏱ 42m`, then `⏱ 0:45`, turning to the warning color in the last 30 seconds and to `cache cold` once it expires. The countdown needs a model that declares its cache lifetime, which today means Pi's built-in Anthropic models. In powerline-footer it shows in the `extension_statuses` segment.
+
+With `compactBeforeExpiry` on, Pi compacts 20 seconds before the cache expires, but only when it's idle, nothing is queued, the context is at least `minContextPercent` full, and the cached path is available. Otherwise nothing happens. Sending a message resets the timer.
+
+```json
+{
+  "cachedCompaction": {
+    "cacheRetention": "long",
+    "compactBeforeExpiry": true,
+    "minContextPercent": 50
+  }
+}
+```
+
+Put this in `~/.pi/agent/settings.json`. The defaults are `"long"`, `false`, and `50`.
+
 ## How it stays safe
 
 Before anything is sent, the extension rebuilds the request with Pi's own serializer and compares it field by field with the last real request. If any part of the cached prefix would differ, it doesn't send its request and Pi's default compaction runs instead. That covers a different thinking level, an edited history, tree navigation, or a model switch.

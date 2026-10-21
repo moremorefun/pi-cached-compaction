@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { prefixMismatch, trailingMessages } from "../cached-request.ts";
+import { cacheExpiresAt, prefixMismatch, trailingMessages } from "../cached-request.ts";
 
 const user = (text: string, timestamp: number) => ({ role: "user", content: text, timestamp }) as AgentMessage;
 const entry = (id: string, message: AgentMessage) => ({ type: "message", id, parentId: null, timestamp: "", message }) as SessionEntry;
@@ -59,4 +59,16 @@ test("a branch that no longer contains the captured transcript is rejected", () 
 		{ type: "branch_summary", id: "s", parentId: "a", timestamp: "", summary: "...", fromId: "x" } as SessionEntry,
 	];
 	assert.equal(trailingMessages(withSummary, [user("fix the bug", 1)]), undefined);
+});
+
+test("cache expiry follows the latest cached request and cache-warming refreshes, and resets at compaction", () => {
+	const assistant = (timestamp: number, cacheRead: number) =>
+		({ role: "assistant", content: [], timestamp, usage: { input: 1, output: 1, cacheRead, cacheWrite: 0 } }) as unknown as AgentMessage;
+	const warm = (at: number) => ({ type: "usage", id: `w${at}`, parentId: null, timestamp: new Date(at).toISOString(), kind: "cache_warm" }) as SessionEntry;
+	const compaction = { type: "compaction", id: "c", parentId: null, timestamp: "" } as SessionEntry;
+
+	assert.equal(cacheExpiresAt([entry("a", assistant(1_000, 500))], 300_000), 301_000);
+	assert.equal(cacheExpiresAt([entry("a", assistant(1_000, 500)), warm(200_000)], 300_000), 500_000);
+	assert.equal(cacheExpiresAt([entry("a", assistant(1_000, 0))], 300_000), undefined);
+	assert.equal(cacheExpiresAt([entry("a", assistant(1_000, 500)), compaction], 300_000), undefined);
 });
