@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { cacheExpiresAt, prefixMismatch, reportedCacheTier, trailingMessages } from "../cached-request.ts";
+import { cacheExpiresAt, prefixMismatch, reportedCacheTier, trailingMessages, withSharedPrefixCache } from "../cached-request.ts";
 
 const user = (text: string, timestamp: number) => ({ role: "user", content: text, timestamp }) as AgentMessage;
 const entry = (id: string, message: AgentMessage) => ({ type: "message", id, parentId: null, timestamp: "", message }) as SessionEntry;
@@ -107,4 +107,22 @@ test("the cache tier comes from the latest write that reports its 1-hour share",
 	assert.equal(reportedCacheTier([wrote("a", 500, 500), wrote("b", 0, 0)]), "long", "a turn that only read keeps the tier");
 	assert.equal(reportedCacheTier([wrote("a", 500)]), undefined, "a provider that does not report the share gives no tier");
 	assert.equal(reportedCacheTier([wrote("a", 500, 500), compaction]), undefined);
+});
+
+test("GPT long retention caches the system prompt for 12 hours under the project's key", () => {
+	const turn = { role: "user", content: [{ type: "input_text", text: "fix the bug" }] };
+	const options = { ttl: "30m" };
+	const request = { model: "gpt-6-luna", prompt_cache_key: "session-1", prompt_cache_options: options, input: [{ role: "developer", content: "You are Pi." }, turn] };
+	assert.deepEqual(withSharedPrefixCache(request, "pi-project"), {
+		model: "gpt-6-luna",
+		prompt_cache_key: "pi-project",
+		prompt_cache_options: options,
+		input: [{ role: "developer", content: [{ type: "input_text", text: "You are Pi.", prompt_cache_breakpoint: { mode: "explicit", ttl: "12h" } }] }, turn],
+	});
+	// Pi drops the key when a request turns caching off, as its own compaction does.
+	const uncached = { model: "gpt-6-luna", input: request.input };
+	assert.equal(withSharedPrefixCache(uncached, "pi-project"), uncached);
+	// Pi keeps the key but drops the cache options for endpoints that reject them, such as Sign in with ChatGPT.
+	const noOptions = { model: "gpt-6-luna", prompt_cache_key: "session-1", input: request.input };
+	assert.equal(withSharedPrefixCache(noOptions, "pi-project"), noOptions);
 });

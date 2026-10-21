@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { convertToLlm, getLatestCompactionEntry, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -11,6 +12,7 @@ import {
 	reportedCacheTier,
 	summaryInstruction,
 	trailingMessages,
+	withSharedPrefixCache,
 } from "./cached-request.ts";
 import { loadConfig } from "./config.ts";
 
@@ -43,6 +45,21 @@ const OPENAI_MIN_TTL_SECONDS = 1800;
 function isOpenAiResponses(model: Model<Api>): boolean {
 	return model.provider === "openai" && model.api === "openai-responses";
 }
+
+/** GPT-5.6 and later: Pi sends them prompt_cache_options, and OpenAI keeps their cache at least 30 minutes. */
+function hasExplicitPromptCache(model: Model<Api>): boolean {
+	return model.api === "openai-responses" && (model.compat as { supportsExplicitPromptCacheMode?: boolean } | undefined)?.supportsExplicitPromptCacheMode === true;
+}
+
+/**
+ * Long retention on GPT-5.6 and later caches the shared prefix for 12 hours under one key per project,
+ * so later sessions in the project read it. Undefined when the request keeps Pi's caching as is.
+ */
+function sharedPrefixKey(model: Model<Api>, cwd: string): string | undefined {
+	if (!hasExplicitPromptCache(model) || process.env.PI_CACHE_RETENTION !== "long") return undefined;
+	return `pi-${createHash("sha256").update(cwd).digest("hex").slice(0, 40)}`;
+}
+
 /** How long before expiry the idle compaction starts, leaving time for the request to reach the provider. */
 const EXPIRY_LEAD_MS = 20_000;
 const WARNING_MS = 30_000;
@@ -62,10 +79,9 @@ function formatTokens(count: number): string {
 function cacheTtlMs(model: Model<Api>, entries: SessionEntry[]): number | undefined {
 	const reported = reportedCacheTier(entries);
 	const tier = reported ?? (process.env.PI_CACHE_RETENTION === "long" ? "long" : "short");
-	const explicitCacheModel = (model.compat as { supportsExplicitPromptCacheMode?: boolean } | undefined)?.supportsExplicitPromptCacheMode === true;
 	const seconds = model.promptCache?.[tier]
 		?? (reported ? REPORTED_TIER_SECONDS[reported] : undefined)
-		?? (isOpenAiResponses(model) && explicitCacheModel ? OPENAI_MIN_TTL_SECONDS : undefined);
+		?? (hasExplicitPromptCache(model) ? OPENAI_MIN_TTL_SECONDS : undefined);
 	return seconds === undefined ? undefined : seconds * 1000;
 }
 
@@ -167,8 +183,12 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 	pi.on("before_provider_request", (event, ctx) => {
 		const transcript = pendingTranscript;
 		pendingTranscript = undefined;
-		if (!transcript || !ctx.model || !isPayload(event.payload)) return;
-		captured = { transcript, payload: event.payload, model: ctx.model };
+		if (!ctx.model || !isPayload(event.payload)) return;
+		// Cache-warming replays pass through here too, so they keep the same breakpoints and key.
+		const sharedKey = sharedPrefixKey(ctx.model, ctx.cwd);
+		const payload = sharedKey ? withSharedPrefixCache(event.payload, sharedKey) : event.payload;
+		if (transcript) captured = { transcript, payload, model: ctx.model };
+		return payload === event.payload ? undefined : payload;
 	});
 	pi.on("message_start", (event, ctx) => {
 		const transcript = pendingTranscript;
@@ -250,9 +270,15 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 				...(payload && key
 					? {
 						onPayload: (params: unknown) => {
-							mismatch = isPayload(params) ? prefixMismatch(payload, params, key, cacheNeutral) : "the provider payload is not an object";
+							if (!isPayload(params)) {
+								mismatch = "the provider payload is not an object";
+								throw new Error(PREFIX_MISMATCH);
+							}
+							const sharedKey = sharedPrefixKey(request.model, ctx.cwd);
+							const sent = sharedKey ? withSharedPrefixCache(params, sharedKey) : params;
+							mismatch = prefixMismatch(payload, sent, key, cacheNeutral);
 							if (mismatch) throw new Error(PREFIX_MISMATCH);
-							return undefined;
+							return sent;
 						},
 					}
 					// "none" marks a one-shot, which a bridge without fork requests runs apart from the session.

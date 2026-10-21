@@ -70,11 +70,11 @@ Pi's default compaction sends only the messages it summarizes, as text, and cuts
 | 10k tokens, mostly long answers (`gpt-5.6-luna`) | 6.0k sent, $0.00224 | 10k sent, 95% cached, $0.00123 |
 | 2k tokens, a few tool calls (`gpt-6-luna`) | 0.3k sent, $0.00009 | 2.2k sent, 83% cached, $0.00035 |
 
-In tool-heavy sessions the two come out about even. The cached path's input cost less ($0.00049 against $0.00074 on `gpt-6-luna`), but the model reasoned longer over the full context. For the same price, the summary is written from the full tool output instead of 2,000-character excerpts. When the session is mostly conversation, the default sends all of it at full price, and this extension costs 42–45% less. In very small sessions the default is cheaper. On these opencode-go models, Pi's default also pays OpenAI's 1.25× cache-write price, because Pi can't turn caching off through opencode-go.
+In tool-heavy sessions the two come out about even. The cached path's input cost less ($0.00049 against $0.00074 on `gpt-6-luna`), but the model reasoned longer over the full context. For the same price, the summary is written from the full tool output instead of 2,000-character excerpts. When the session is mostly conversation, the default sends all of it at full price, and this extension costs 42–45% less. In very small sessions the default is cheaper. In these runs Pi's default also paid OpenAI's 1.25× cache-write price; the opencode-go flag under [With OpenAI models](#with-openai-models) stops that.
 
 ## Cache timer and compacting before expiry
 
-In interactive sessions the extension turns on Pi's long cache retention (`PI_CACHE_RETENTION=long`) unless you've set that variable yourself. Anthropic caches then last 1 hour instead of 5 minutes. Anthropic charges 2× input price to write a 1-hour cache instead of 1.25×, and reads cost the same. On OpenAI the setting matters less: see [With OpenAI models](#with-openai-models). Headless runs (`pi -p`, JSON mode, subagent processes) keep the 5-minute cache, because nobody pauses there and the higher write price would be wasted.
+In interactive sessions the extension turns on Pi's long cache retention (`PI_CACHE_RETENTION=long`) unless you've set that variable yourself. Anthropic caches then last 1 hour instead of 5 minutes. Anthropic charges 2× input price to write a 1-hour cache instead of 1.25×, and reads cost the same. On GPT-5.6 and later, the system prompt and tools are cached for 12 hours instead: see [With OpenAI models](#with-openai-models). Headless runs (`pi -p`, JSON mode, subagent processes) keep the short cache, because nobody pauses there and the higher write price would be wasted.
 
 The choice is made once per session because a cache can't move up a tier cheaply. Measured through Claude Code on Anthropic:
 
@@ -87,7 +87,7 @@ The choice is made once per session because a cache can't move up a tier cheaply
 
 So "5 minutes while working, 1 hour when idle" costs more than choosing 1 hour from the start. With the 1-hour cache, Pi's own cache warmer rarely fires, which is fine: it stops after 30 idle minutes, before a 1-hour cache needs a refresh.
 
-While Pi is idle, the footer shows how long the cache has left: `⏱ 42m`, then `⏱ 0:45`, turning to the warning color in the last 30 seconds and to `cache cold` once it expires. The lifetime comes from the cache tier the provider reports it wrote (Pi's Anthropic provider and pi-claude-bridge report it), else from the model's declared lifetime. Models with neither show no countdown; you can declare a lifetime yourself, as shown for opencode-go [below](#with-openai-models). In powerline-footer it shows in the `extension_statuses` segment.
+While Pi is idle, the footer shows how long the cache has left: `⏱ 42m`, then `⏱ 0:45`, turning to the warning color in the last 30 seconds and to `cache cold` once it expires. The lifetime comes from the cache tier the provider reports it wrote (Pi's Anthropic provider and pi-claude-bridge report it), else from the model's declared lifetime, else OpenAI's 30-minute minimum for GPT-5.6 and later. Other models show no countdown unless you declare a lifetime with Pi's `modelOverrides.promptCache`. In powerline-footer it shows in the `extension_statuses` segment.
 
 With `compactBeforeExpiry` on, Pi compacts 20 seconds before the cache expires, but only when it's idle, nothing is queued, the context holds at least `minContextTokens` tokens, and the cached path is available. Otherwise nothing happens. Sending a message resets the timer. The threshold is in tokens rather than percent because the cost of rewriting an expired cache depends on its size, and on 1M-token models a percentage would almost never trigger.
 
@@ -133,29 +133,48 @@ OpenAI caches the same way in principle: a matching prefix reads at 0.1× the in
 
 ```
                     openai provider                  opencode-go
-countdown           ⏱ 30m on GPT-5.6 and later       none until you declare a lifetime (below)
-long retention      GPT-5.6+: ttl "30m" (default)    Pi sends the older "24h" field: no effect measured
+countdown           ⏱ 30m on GPT-5.6 and later       ⏱ 30m once you set the flag below
+long retention      12h system prompt, 30m chat      the same with the flag; without it, Pi sends
+                    one cache key per project        the older "24h" field, which does nothing
 reasoning effort    GPT-6: item after the cache      request field: a thinking change falls back
 tool_choice         "none" on the summary request    left alone
 tested live         not yet (no API credits)         yes, see Live test results
 ```
 
-**Countdown on opencode-go.** Pi declares no cache lifetime for opencode-go's GPT models. So there's no countdown, and a compaction after a long pause sends the whole session to a cold cache at the 1.25× write price. Declare OpenAI's 30-minute minimum in `~/.pi/agent/models.json`:
+**12 hours for what every session shares.** OpenAI lets one request mix cache lifetimes. With long retention on, the extension gives the system prompt a 12-hour breakpoint, which also covers the tool definitions OpenAI renders before it, and leaves the conversation on the 30-minute default. It also replaces Pi's per-session `prompt_cache_key` with one per project. OpenAI keeps caches under different keys apart, so with Pi's key every new session paid to write the same system prompt and tools again.
+
+```
+                        Pi alone                          with the extension
+system prompt + tools   each session writes it at 1.25×   written once at 2.5×, kept 12 h,
+                        and it lasts 30 min               read by later sessions at 0.1×
+conversation            30 min                            30 min (the countdown follows this)
+```
+
+The 12-hour write costs an extra 1.25× of the prefix once, and the second session in the project that day earns it back. With a full set of extensions the prefix is around 19k tokens. Pi prices every cache write at the 30-minute rate, so its cost display understates the 12-hour part. The cached compaction request carries the same key and breakpoint, so its prefix still matches. Headless runs keep short retention, so they don't get this.
+
+**opencode-go.** Pi doesn't send OpenAI's cache options to opencode-go's GPT models, so they get neither the 12-hour prefix nor a countdown. Turn the options on in `~/.pi/agent/models.json`:
 
 ```json
 {
   "providers": {
     "opencode-go": {
       "modelOverrides": {
-        "gpt-6-luna": { "promptCache": { "short": 1800, "long": 1800 } },
-        "gpt-5.6-luna": { "promptCache": { "short": 1800, "long": 1800 } }
+        "gpt-6-luna": { "compat": { "supportsExplicitPromptCacheMode": true } },
+        "gpt-5.6-luna": { "compat": { "supportsExplicitPromptCacheMode": true } }
       }
     }
   }
 }
 ```
 
-Through opencode-go the cache was still warm after 12, 17, and 24 idle minutes, and gone after 32 and 62 with either retention setting. With the lifetime declared, the countdown and `compactBeforeExpiry` work, and a compaction after the cache expires goes to Pi's default instead. Declaring a lifetime also makes these models eligible for Pi's cache warmer during long runs, which only fires when it saves at least $0.05.
+Pi's own cache warmer only runs for models with a declared lifetime, so add `"promptCache": { "short": 1800, "long": 1800 }` next to `compat` if you want it to keep caches warm during long runs.
+
+Measured through opencode-go:
+
+- With the flag, a second session in the same project read 1,261 of 1,264 prompt tokens from the cache on its first request. With Pi's per-session key it read none.
+- A 12-hour entry was still cached after 40 idle minutes, both as a breakpoint on the system prompt and as the request's lifetime. A 30-minute entry written at the same time had expired. These were direct API requests.
+- With the flag, cached compaction still read 83–86% from the cache, the countdown showed `⏱ 29m`, and Pi's own compaction stopped writing to the cache (0 tokens, where it used to write its whole prompt at 1.25×).
+- The conversation's 30-minute lifetime held: warm after 12, 17, and 24 idle minutes, gone after 32 and 62. `compactBeforeExpiry` and the fallback after expiry were tested with a 75-second declared lifetime (see Live test results).
 
 **`tool_choice`.** OpenAI's guide recommends `tool_choice: "none"` to stop tool calls without changing the cached prefix, so the extension sets it on the `openai` provider and the prefix check ignores that one field. Measured on the same GPT models through opencode-go, it isn't quite free: the summary request read exactly 72 fewer tokens from the cache every time, at any session size. On Grok through opencode-go it cut the cache off after the tool definitions (62–69% instead of 90%). So on every other provider the extension leaves `tool_choice` alone and tells the model not to call tools. No model called one in any test.
 
@@ -192,11 +211,15 @@ GPT through opencode-go, `gpt-6-luna` / `gpt-5.6-luna`:
 | Thinking level changed before `/compact` | skipped (`request field "reasoning" differs`), Pi's default ran |
 | Model switched before `/compact` | skipped (nothing sent to this model yet), Pi's default ran |
 | `tool_choice: "none"` on the summary request | 72 fewer tokens read from the cache, every time |
+| Second session in the same project, first request (flag on) | 1,261 of 1,264 cached; none with Pi's per-session key |
+| 12-hour entry, idle 40 minutes (direct API requests) | still cached; a 30-minute entry beside it had expired |
+| Tools, then `/compact` twice, with the flag (12h prefix, shared key) | 83, 85% / 84, 86%; countdown `⏱ 29m` |
+| Pi's own compaction with the flag | 0 tokens written to the cache |
 
 Every run that used tools left the edited file correct. Cost comparisons with Pi's default are in [What it costs](#what-it-costs).
 
 ## Limitations
 
 - Outside the `openai` provider, the model sees your tools during the summary request and is told not to call them, because changing `tool_choice` costs cache there: on Anthropic it discards the message cache. If it calls a tool or replies with no summary text, Pi's default compaction runs.
-- Without a reported or declared cache lifetime, the extension can't tell a cold cache from a warm one, so a compaction after a long pause pays to rewrite the whole session. Declare the lifetime as shown for opencode-go above.
+- Without a known cache lifetime, the extension can't tell a cold cache from a warm one, so a compaction after a long pause pays to rewrite the whole session. Set the flag above for opencode-go's GPT models, or declare a lifetime with Pi's `modelOverrides.promptCache` for other models.
 - If another extension rewrites provider payloads after this one, the request can miss the cache. The summary is still correct, it just costs about what the default would.

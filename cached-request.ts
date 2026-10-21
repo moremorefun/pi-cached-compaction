@@ -119,6 +119,22 @@ function isTrailingEffort(item: unknown): boolean {
 	return isPayload(item) && (item.role === "system" || item.type === "configuration_update");
 }
 
+/**
+ * OpenAI's mixed cache lifetimes for GPT-5.6 and later: the system prompt, with the tool definitions
+ * rendered before it, gets a 12-hour breakpoint, and the conversation keeps the 30-minute default.
+ * `cacheKey` replaces Pi's per-session key, which keeps every new session from reading that prefix.
+ * Only requests Pi already sends cache options are changed: Pi drops them when caching is off and on
+ * endpoints that reject them, such as Sign in with ChatGPT.
+ */
+export function withSharedPrefixCache(payload: Payload, cacheKey: string): Payload {
+	const input = payload.input;
+	if (typeof payload.prompt_cache_key !== "string" || !isPayload(payload.prompt_cache_options) || !Array.isArray(input)) return payload;
+	const [first, ...rest] = input;
+	if (!isPayload(first) || first.role !== "developer" || typeof first.content !== "string") return payload;
+	const content = [{ type: "input_text", text: first.content, prompt_cache_breakpoint: { mode: "explicit", ttl: "12h" } }];
+	return { ...payload, prompt_cache_key: cacheKey, input: [{ ...first, content }, ...rest] };
+}
+
 function contentText(content: string | { type: string; text?: string }[]): string {
 	return typeof content === "string" ? content : content.flatMap((block) => (block.type === "text" && block.text ? [block.text] : [])).join("\n");
 }
