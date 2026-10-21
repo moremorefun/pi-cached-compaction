@@ -206,7 +206,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			return fromExpiry ? { cancel: true } : undefined;
 		};
 		const request = captured;
-		if (!request) return fromExpiry ? { cancel: true } : undefined;
+		if (!request) return fallBack("nothing has been sent to this model on this branch yet");
 		if (event.reason === "overflow") return fallBack("the last request overflowed the context window");
 		if (ctx.model?.provider !== request.model.provider || ctx.model.id !== request.model.id) {
 			return fallBack("the model changed since the last request");

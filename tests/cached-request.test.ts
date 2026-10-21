@@ -71,6 +71,18 @@ test("a branch that no longer contains the captured transcript is rejected", () 
 	assert.equal(trailingMessages(withSummary, [user("fix the bug", 1)]), undefined);
 });
 
+test("a compaction entry the captured request already summarizes does not end the trailing messages", () => {
+	// Mid-run compaction: the entry lands after the tool result, and the next request starts with its summary.
+	const toolResult = user("tool output", 2);
+	const call = { role: "assistant", content: [{ type: "text", text: "edit" }], timestamp: 4 } as AgentMessage;
+	const compaction = (at: number) => ({ type: "compaction", id: `c${at}`, parentId: null, timestamp: new Date(at).toISOString(), summary: "s", firstKeptEntryId: "a", tokensBefore: 1 }) as SessionEntry;
+	const entries = [entry("a", user("fix the bug", 1)), entry("b", toolResult), compaction(3), entry("d", call)];
+	const summary = { role: "compactionSummary", summary: "s", tokensBefore: 1, timestamp: 3 } as AgentMessage;
+	assert.deepEqual(trailingMessages(entries, [summary, user("fix the bug", 1), toolResult]), [call]);
+	// A request sent before that compaction does not carry its summary.
+	assert.equal(trailingMessages(entries, [user("fix the bug", 1), toolResult]), undefined);
+});
+
 test("cache expiry follows the latest cached request and cache-warming refreshes, and resets at compaction", () => {
 	const assistant = (timestamp: number, cacheRead: number) =>
 		({ role: "assistant", content: [], timestamp, usage: { input: 1, output: 1, cacheRead, cacheWrite: 0 } }) as unknown as AgentMessage;

@@ -34,6 +34,8 @@ export function trailingMessages(entries: SessionEntry[], transcript: AgentMessa
 	const trailing: AgentMessage[] = [];
 	for (const entry of entries.slice(index + 1)) {
 		if (entry.type === "message") trailing.push(entry.message);
+		// Compaction during a run appends its entry after messages the next request carries behind the new summary.
+		else if (entry.type === "compaction" && transcript.some((message) => message.role === "compactionSummary" && message.timestamp === Date.parse(entry.timestamp))) continue;
 		else if (!CONTEXT_FREE_ENTRY_TYPES.has(entry.type)) return undefined;
 	}
 	return trailing;
