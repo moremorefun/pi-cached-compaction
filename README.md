@@ -53,7 +53,7 @@ Put this folder in `~/.pi/agent/extensions/pi-cached-compaction` (or install it 
 On `/compact` or automatic compaction, a notice reports the cache hit:
 
 ```
-Cached compaction: 182k of 190k prompt tokens came from the cache.
+Cached compaction: 95% of 190k prompt tokens came from the cache.
 ```
 
 When it can't guarantee a cache hit, it says why and lets Pi's default compaction run:
@@ -70,6 +70,8 @@ Measured on `opencode-go/kimi-k2.6` with a 9k-token session (most of it Pi's sys
 | pi-cached-compaction | 9,133 | 8,192 |
 
 In a small session like this one, the default sends fewer tokens, because it skips the system prompt, the tools, and the recent messages. The savings grow with the session. When compaction runs near the context limit, the default pays full price for the whole summarized history, while this extension pays the cache-read price for nearly all of it.
+
+Tested live with tool calls (read, edit, bash) followed by two compactions, both read from the cache: `pi-claude/claude-opus-5-5` and `claude-sonnet-5-5` (96%, or 99% with a full set of other extensions loaded), `opencode-go/claude-haiku-5-5` (86–87%), `opencode-go/gpt-6-luna` and `gpt-5.6-luna` (84–86%), and `opencode-go/kimi-k2.7-code` (79–86%).
 
 ## Cache timer and compacting before expiry
 
@@ -141,7 +143,7 @@ countdown           ⏱ shown (30 min)            none (no guaranteed lifetime)
 - GPT-6 models carry the reasoning effort as a trailing `configuration_update` item. It sits after the cache breakpoint, so the check treats it like Anthropic's trailing effort message.
 - On `openai-codex` (ChatGPT sign-in), the request is left exactly as Pi builds it and no countdown is shown: that backend documents no cache lifetime.
 
-Checked against Pi's own OpenAI serializer for `gpt-6.1-sol` and `gpt-5.5`: the summary request matches the previous request's prefix, and `tool_choice` is the only other field that changes. It hasn't been run against the live OpenAI API yet.
+Checked against Pi's own OpenAI serializer for `gpt-6.1-sol` and `gpt-5.5`: the summary request matches the previous request's prefix, and `tool_choice` is the only other field that changes. GPT models on the same Responses API have run live through `opencode-go`, but the `openai` provider itself, where `tool_choice: "none"` applies, hasn't been run live yet.
 
 ## Limitations
 

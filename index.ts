@@ -290,7 +290,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		if (ctx.hasUI) {
 			ctx.ui.notify(
 				cacheRead > 0
-					? `Cached compaction: ${formatTokens(cacheRead)} of ${formatTokens(promptTokens)} prompt tokens came from the cache.`
+					? `Cached compaction: ${Math.floor((100 * cacheRead) / promptTokens)}% of ${formatTokens(promptTokens)} prompt tokens came from the cache.`
 					: "Cached compaction finished without a cache hit; the prompt cache had likely expired.",
 				cacheRead > 0 ? "info" : "warning",
 			);
