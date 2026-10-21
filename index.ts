@@ -8,16 +8,17 @@ import {
 	formatRemaining,
 	formatTokens,
 	isPayload,
+	keptStart,
 	messageArrayKey,
-	entryPreview,
 	prefixMismatch,
 	reportedCacheTier,
 	summaryInstruction,
 	trailingMessages,
+	withCapturedFields,
 	withSharedPrefixCache,
 	type PrefixMismatch,
 } from "./cached-request.ts";
-import { loadConfig } from "./config.ts";
+import { autoCompactionEnabled, loadConfig } from "./config.ts";
 import {
 	appendTrace,
 	describeTrace,
@@ -187,17 +188,24 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 	const compactBeforeExpiry = (ctx: ExtensionContext, remainingMs: number) => {
 		if (!config.compactBeforeExpiry) return;
 		const secondsLeft = Math.ceil(remainingMs / 1000);
-		const tokens = ctx.getContextUsage()?.tokens;
-		const contextTokens = tokens ?? undefined;
-		let skip: string | undefined;
-		if (!captured) skip = "no request since the session started, compacted, or switched model or branch";
-		else if (!ctx.isIdle() || ctx.hasPendingMessages()) skip = "Pi is busy or has queued messages";
-		else if (contextTokens === undefined) skip = "the context size is unknown";
-		else if (contextTokens < config.minContextTokens) {
-			skip = `the context holds ${formatTokens(contextTokens)} tokens, under minContextTokens (${formatTokens(config.minContextTokens)})`;
+		const contextTokens = ctx.getContextUsage()?.tokens ?? undefined;
+		const skip = (reason: string) => trace(ctx, { event: "expiry", action: "skip", reason, secondsLeft, contextTokens });
+		let compactionOn: boolean;
+		try {
+			compactionOn = autoCompactionEnabled(ctx.isProjectTrusted() ? ctx.cwd : undefined);
+		} catch (error) {
+			return skip(`Pi's settings could not be read: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		trace(ctx, { event: "expiry", action: skip ? "skip" : "compact", reason: skip, secondsLeft, contextTokens });
-		if (skip || contextTokens === undefined) return;
+		if (!compactionOn) return skip("automatic compaction is off in Pi's settings");
+		if (!ctx.isIdle() || ctx.hasPendingMessages()) return skip("Pi is busy or has queued messages");
+		if (contextTokens === undefined) return skip("the context size is unknown");
+		if (contextTokens < config.minContextTokens) {
+			return skip(`the context holds ${formatTokens(contextTokens)} tokens, under minContextTokens (${formatTokens(config.minContextTokens)})`);
+		}
+		// A compaction started here is cancelled unless it takes the cached path, so don't start one that can't.
+		const check = checkCachedPath(ctx.sessionManager.getBranch(), ctx.model);
+		if ("reason" in check) return skip(check.reason);
+		trace(ctx, { event: "expiry", action: "compact", secondsLeft, contextTokens });
 		expiryCompaction = true;
 		// The provider reads the cache when the request starts; counting down past that point would mislead.
 		stopTimer(ctx);
@@ -210,11 +218,13 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			},
 			onError: () => {
 				expiryCompaction = false;
+				// Bring the countdown back without another attempt on the same cache.
+				if (ctx.isIdle()) startTimer(ctx, false);
 			},
 		});
 	};
 
-	const startTimer = (ctx: ExtensionContext) => {
+	const startTimer = (ctx: ExtensionContext, compactAtExpiry = true) => {
 		stopTimer(ctx);
 		const ttlMs = ctx.model ? cacheLifetime(ctx.model, ctx.sessionManager.getBranch())?.ms : undefined;
 		if (ttlMs === undefined) return;
@@ -222,7 +232,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		if (expiresAt === undefined) return;
 		let shown: string | undefined;
 		let ticks = 0;
-		let attempted = false;
+		let attempted = !compactAtExpiry;
 		const tick = () => {
 			// Pi's idle cache warmer can push expiry out; re-read it periodically and before acting on it.
 			if (++ticks % 15 === 0 || (expiresAt as number) - Date.now() <= EXPIRY_LEAD_MS) {
@@ -365,11 +375,12 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			expiresInSeconds: expiresAt === undefined ? undefined : Math.round((expiresAt - Date.now()) / 1000),
 		};
 
-		const keptEntry = event.branchEntries.find((entry) => entry.id === preparation.firstKeptEntryId);
-		const keptStart = keptEntry ? entryPreview(keptEntry) : undefined;
+		// The summary must stop where the kept messages start; without text to point at, it would cover them too.
+		const kept = keptStart(event.branchEntries, preparation.firstKeptEntryId, [...request.transcript, ...trailing]);
+		if (!kept) return fallBack("no kept message in the request has text to mark where the summary ends");
 		const instruction: AgentMessage = {
 			role: "user",
-			content: [{ type: "text", text: summaryInstruction(keptStart, event.customInstructions) }],
+			content: [{ type: "text", text: summaryInstruction(kept, event.customInstructions) }],
 			timestamp: Date.now(),
 		};
 
@@ -383,7 +394,8 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		const disableTools = payload !== undefined && isOpenAiResponses(request.model);
 		const cacheNeutral = new Set(disableTools ? ["tool_choice"] : []);
 		const sharedKey = payload ? sharedPrefixKey(request.model, ctx.cwd) : undefined;
-		record.request = { thinking: thinkingLevel, bridgeFork: payload === undefined, toolChoiceNone: disableTools, sharedPrefix: sharedKey !== undefined };
+		const requestInfo = { thinking: thinkingLevel, bridgeFork: payload === undefined, toolChoiceNone: disableTools, sharedPrefix: false };
+		record.request = requestInfo;
 		const started = Date.now();
 		let response: AssistantMessage;
 		try {
@@ -400,7 +412,10 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 								mismatch = { reason: "the provider payload is not an object" };
 								throw new Error(PREFIX_MISMATCH);
 							}
-							const sent = sharedKey ? withSharedPrefixCache(params, sharedKey) : params;
+							const shared = sharedKey ? withSharedPrefixCache(params, sharedKey) : params;
+							// Pi leaves out the cache options the shared prefix needs on some endpoints (Sign in with ChatGPT).
+							requestInfo.sharedPrefix = shared !== params;
+							const sent = withCapturedFields(payload, shared);
 							mismatch = prefixMismatch(payload, sent, key, cacheNeutral);
 							if (mismatch) throw new Error(PREFIX_MISMATCH);
 							return sent;
@@ -494,7 +509,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 					`pi-cached-compaction · ${model ? `${model.provider}/${model.id}` : "no model"}`,
 					`cache: ${cache}`,
 					`next compaction: ${next}`,
-					`before expiry: ${config.compactBeforeExpiry ? `on, from ${formatTokens(config.minContextTokens)} tokens of context` : "off"} · retention ${process.env.PI_CACHE_RETENTION ?? "short"}`,
+					`before expiry: ${config.compactBeforeExpiry ? `on, from ${formatTokens(config.minContextTokens)} tokens of context` : "off"} · retention ${model?.api === BRIDGE_API ? "set by Claude Code" : (process.env.PI_CACHE_RETENTION ?? "short")}`,
 					`log: ${TRACE_PATH_LABEL}`,
 					"",
 					...log,

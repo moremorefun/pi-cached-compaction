@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { Message } from "@earendil-works/pi-ai";
+import { buildSessionProjection, convertToLlm, sessionEntryToContextMessages, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
 /** Entry types that never add model input, so they may sit between the captured request and compaction. */
 const CONTEXT_FREE_ENTRY_TYPES = new Set(["custom", "label", "session_info", "usage", "thinking_level_change"]);
@@ -18,8 +19,17 @@ export function messageArrayKey(payload: Payload): string | undefined {
 }
 
 function sameMessage(a: AgentMessage, b: AgentMessage): boolean {
+	// Pi stamps a custom message's entry when it saves it, which can be well after the message was sent.
+	if (a.role === "custom" && b.role === "custom") return a.customType === b.customType && JSON.stringify(a.content) === JSON.stringify(b.content);
 	if (a.role !== b.role || a.timestamp !== b.timestamp) return false;
 	return a.role !== "toolResult" || b.role !== "toolResult" || a.toolCallId === b.toolCallId;
+}
+
+/** The model input a message or custom-message entry adds. Extensions send custom messages (subagent and intercom notices, for example). */
+function entryMessage(entry: SessionEntry): AgentMessage | undefined {
+	if (entry.type === "message") return entry.message;
+	if (entry.type === "custom_message") return sessionEntryToContextMessages(entry)[0];
+	return undefined;
 }
 
 /**
@@ -28,11 +38,17 @@ function sameMessage(a: AgentMessage, b: AgentMessage): boolean {
  */
 export function trailingMessages(entries: SessionEntry[], transcript: AgentMessage[]): { messages: AgentMessage[] } | { reason: string } {
 	const last = transcript.findLast((message) => message.role !== "system");
-	const index = last ? entries.findLastIndex((entry) => entry.type === "message" && sameMessage(entry.message, last)) : -1;
+	const index = !last
+		? -1
+		: last.role === "custom"
+			// Pi saves a custom message when it delivers it, so its entry is the first matching one stamped no earlier than the message.
+			? entries.findIndex((entry) => entry.type === "custom_message" && Date.parse(entry.timestamp) >= last.timestamp && sameMessage(sessionEntryToContextMessages(entry)[0], last))
+			: entries.findLastIndex((entry) => entry.type === "message" && sameMessage(entry.message, last));
 	if (index === -1) return { reason: "its last message is no longer on this branch" };
 	const messages: AgentMessage[] = [];
 	for (const entry of entries.slice(index + 1)) {
-		if (entry.type === "message") messages.push(entry.message);
+		const message = entryMessage(entry);
+		if (message) messages.push(message);
 		// Compaction during a run appends its entry after messages the next request carries behind the new summary.
 		else if (entry.type === "compaction" && transcript.some((message) => message.role === "compactionSummary" && message.timestamp === Date.parse(entry.timestamp))) continue;
 		else if (!CONTEXT_FREE_ENTRY_TYPES.has(entry.type)) return { reason: `a ${entry.type} entry came after it` };
@@ -139,6 +155,15 @@ function isTrailingEffort(item: unknown): boolean {
 }
 
 /**
+ * `rebuilt` plus the top-level fields only `captured` has. Extensions earlier in the before_provider_request
+ * chain add fields to the agent's requests (codex-fast adds service_tier), and the summary request skips that chain.
+ */
+export function withCapturedFields(captured: Payload, rebuilt: Payload): Payload {
+	const missing = Object.keys(captured).filter((field) => !(field in rebuilt));
+	return missing.length === 0 ? rebuilt : { ...rebuilt, ...Object.fromEntries(missing.map((field) => [field, captured[field]])) };
+}
+
+/**
  * OpenAI's mixed cache lifetimes for GPT-5.6 and later: the system prompt, with the tool definitions
  * rendered before it, gets a 12-hour breakpoint, and the conversation keeps the 30-minute default.
  * `cacheKey` replaces Pi's per-session key, which keeps every new session from reading that prefix.
@@ -158,44 +183,63 @@ function contentText(content: string | { type: string; text?: string }[]): strin
 	return typeof content === "string" ? content : content.flatMap((block) => (block.type === "text" && block.text ? [block.text] : [])).join("\n");
 }
 
-/** First words of the entry Pi keeps first, so the summary prompt can point at where the kept context starts. */
-export function entryPreview(entry: SessionEntry): string | undefined {
+/** First words of a message as the model reads it, so the summary prompt can point at where the kept context starts. */
+function messagePreview(message: Message): string | undefined {
 	let text: string | undefined;
-	if (entry.type === "custom_message") {
-		text = contentText(entry.content);
-	} else if (entry.type === "branch_summary") {
-		text = entry.summary;
-	} else if (entry.type === "message") {
-		const message = entry.message;
-		if (message.role === "user") {
-			text = contentText(message.content);
-		} else if (message.role === "assistant") {
-			text = message.content
-				.flatMap((block) => (block.type === "text" ? [block.text] : block.type === "toolCall" ? [`[tool call: ${block.name}]`] : []))
-				.join("\n");
-		} else if (message.role === "bashExecution") {
-			text = `$ ${message.command}`;
-		}
+	if (message.role === "user") {
+		text = contentText(message.content);
+	} else if (message.role === "assistant") {
+		text = message.content
+			.flatMap((block) => (block.type === "text" ? [block.text] : block.type === "toolCall" ? [`[tool call: ${block.name} ${JSON.stringify(block.arguments)}]`] : []))
+			.join("\n");
 	}
 	text = text?.trim();
 	if (!text) return undefined;
 	return text.length > 400 ? `${text.slice(0, 400)}…` : text;
 }
 
-export function summaryInstruction(keptStart: string | undefined, customInstructions: string | undefined): string {
-	const kept = keptStart
-		? `Everything from the message that begins with the text below onward stays in context verbatim, placed right after your summary. Summarize only what comes before that message, and describe the state as of that point. Do not report anything from the kept messages as done or decided: the next model reads them itself, after your summary.
+export interface KeptStart {
+	text: string;
+	/** Which of the kept messages opening with `text` it is, counting back from the end (1 for the last). */
+	fromEnd: number;
+}
 
-<kept-start>
-${keptStart}
-</kept-start>
+/**
+ * Where the messages Pi keeps verbatim start in `conversation`, the messages the summary request sends: the opening
+ * of the first kept message it carries, as the model reads it. Undefined when there is none, or it has no text to
+ * quote (an image or thinking only). Pi's cut can land on metadata entries just before that message, such as a
+ * thinking change, and the request can lack kept messages that context handlers or `!!` commands keep from the model.
+ */
+export function keptStart(entries: SessionEntry[], firstKeptEntryId: string, conversation: AgentMessage[]): KeptStart | undefined {
+	const projected = buildSessionProjection(entries).entries;
+	const start = projected.findIndex((entry) => entry.sourceEntry.id === firstKeptEntryId);
+	if (start === -1) return undefined;
+	const sent = conversation.filter((message) => convertToLlm([message]).length > 0);
+	let at = -1;
+	for (const message of projected.slice(start).flatMap((entry) => entry.messages)) {
+		// The last match: a repeated custom message matched too early would leave messages unsummarized.
+		at = sent.findLastIndex((candidate) => sameMessage(candidate, message));
+		if (at !== -1) break;
+	}
+	if (at === -1) return undefined;
+	const previews = convertToLlm(sent.slice(at)).map(messagePreview);
+	const text = previews[0];
+	return text ? { text, fromEnd: previews.filter((preview) => preview === text).length } : undefined;
+}
 
-`
-		: "";
+export function summaryInstruction(kept: KeptStart, customInstructions: string | undefined): string {
+	const repeated = kept.fromEnd > 1 ? ` Several kept messages begin with this text: it is number ${kept.fromEnd} of them, counting back from the end.` : "";
+	const toolCalls = kept.text.includes("[tool call: ") ? " Tool calls are written as [tool call: name arguments]." : "";
 	const focus = customInstructions?.trim() ? `\n\nAdditional focus: ${customInstructions.trim()}` : "";
 	return `Stop working on the task and do not call any tools. Write a structured context checkpoint summary of the conversation above. Another LLM will use it to continue the work after the earlier messages are removed.
 
-${kept}If the conversation starts with an earlier summary, fold it into the new one: keep its facts, move finished items to Done, and update Next Steps.
+Everything from the message that begins with the text below onward stays in context verbatim, placed right after your summary.${repeated}${toolCalls} Summarize only what comes before that message, and describe the state as of that point. Do not report anything from the kept messages as done or decided: the next model reads them itself, after your summary.
+
+<kept-start>
+${kept.text}
+</kept-start>
+
+If the conversation starts with an earlier summary, fold it into the new one: keep its facts, move finished items to Done, and update Next Steps.
 
 Use this EXACT format:
 

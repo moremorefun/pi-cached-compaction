@@ -118,6 +118,8 @@ In tool-heavy sessions the two come out about even. The cached path's input cost
 
 In interactive sessions the extension turns on Pi's long cache retention (`PI_CACHE_RETENTION=long`) unless you've set that variable yourself. Anthropic caches then last 1 hour instead of 5 minutes. Anthropic charges 2× input price to write a 1-hour cache instead of 1.25×, and reads cost the same. On GPT-5.6 and later, the system prompt and tools are cached for 12 hours instead: see [With OpenAI models](#with-openai-models). Headless runs (`pi -p`, JSON mode, subagent processes) keep the short cache, because nobody pauses there and the higher write price would be wasted.
 
+On `pi-claude/*`, Claude Code picks the cache lifetime itself (1 hour on a subscription), so this setting doesn't apply there and `/cached-compaction` says so.
+
 The choice is made once per session because a cache can't move up a tier cheaply. Measured through Claude Code on Anthropic:
 
 ```
@@ -131,7 +133,9 @@ So "5 minutes while working, 1 hour when idle" costs more than choosing 1 hour f
 
 While Pi is idle, the footer shows how long the cache has left: `⏱ 42m`, then `⏱ 0:45`, turning to the warning color in the last 30 seconds and to `cache cold` once it expires. The lifetime comes from the cache tier the provider reports it wrote (Pi's Anthropic provider and pi-claude-bridge report it), else from the model's declared lifetime, else OpenAI's 30-minute minimum for GPT-5.6 and later. Other models show no countdown unless you declare a lifetime with Pi's `modelOverrides.promptCache`. In powerline-footer it shows in the `extension_statuses` segment.
 
-With `compactBeforeExpiry` on, Pi compacts 20 seconds before the cache expires, but only when it's idle, nothing is queued, the context holds at least `minContextTokens` tokens, and the cached path is available. Otherwise nothing happens. Sending a message resets the timer. The threshold is in tokens rather than percent because the cost of rewriting an expired cache depends on its size, and on 1M-token models a percentage would almost never trigger.
+With `compactBeforeExpiry` on, Pi compacts 20 seconds before the cache expires, but only when it's idle, nothing is queued, Pi's automatic compaction is on, the context holds at least `minContextTokens` tokens, and the cached path is available. Otherwise nothing happens. Sending a message resets the timer. The threshold is in tokens rather than percent because the cost of rewriting an expired cache depends on its size, and on 1M-token models a percentage would almost never trigger.
+
+On `pi-claude/*` this saves no money: Claude Code bills by subscription, so the bridge prices its models at $0. What it saves is subscription quota and the slow first reply after a cold cache. It still replaces the older part of the conversation with a summary well before Pi would compact a 1M-token model, so raise `minContextTokens` or turn it off if you'd rather keep the full context through long pauses.
 
 ```json
 {
@@ -143,7 +147,7 @@ With `compactBeforeExpiry` on, Pi compacts 20 seconds before the cache expires, 
 }
 ```
 
-Put this in `~/.pi/agent/settings.json`. The defaults are `"long"`, `false`, and `50000`.
+Put this in `~/.pi/agent/settings.json`; project settings files don't apply to this key, and an unknown key is an error. The defaults are `"long"`, `false`, and `50000`.
 
 ## How it stays safe
 
@@ -160,6 +164,7 @@ It also steps aside when:
 
 - the model's declared cache lifetime has passed since the last request or cache-warming refresh, or the last successful request didn't use the cache (for example, a prompt under the provider's minimum cacheable length). A cold cache makes the full prompt cost more than the default.
 - compaction is recovering from a context overflow
+- the first message Pi keeps has no text the summary prompt can point at (only an image or thinking), so the summary couldn't be told where to stop
 - the provider builds no HTTP payload Pi can see (other than pi-claude-bridge, below)
 - the API isn't a `messages` or `input` style payload (Anthropic, OpenAI Chat Completions, OpenAI Responses). Google isn't supported yet.
 
@@ -264,4 +269,5 @@ Every run that used tools left the edited file correct. Cost comparisons with Pi
 
 - Outside the `openai` provider, the model sees your tools during the summary request and is told not to call them, because changing `tool_choice` costs cache there: on Anthropic it discards the message cache. If it calls a tool or replies with no summary text, Pi's default compaction runs.
 - Without a known cache lifetime, the extension can't tell a cold cache from a warm one, so a compaction after a long pause pays to rewrite the whole session. Set the flag above for opencode-go's GPT models, or declare a lifetime with Pi's `modelOverrides.promptCache` for other models.
-- If another extension rewrites provider payloads after this one, the request can miss the cache. The summary is still correct, it just costs about what the default would.
+- Fields that extensions loaded before this one add to provider payloads, such as codex-fast's `service_tier`, are copied into the summary request. Changes from extensions loaded after it aren't seen, so the request can miss the cache. The summary is still correct, it just costs about what the default would, and the card shows the low cache share.
+- When a later compaction falls back to Pi's default, its read and modified file lists start over: Pi doesn't carry the lists forward from an extension's compaction.

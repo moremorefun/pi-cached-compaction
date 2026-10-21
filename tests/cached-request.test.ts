@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { cacheExpiresAt, prefixMismatch, reportedCacheTier, trailingMessages, withSharedPrefixCache } from "../cached-request.ts";
+import { cacheExpiresAt, keptStart, prefixMismatch, reportedCacheTier, trailingMessages, withCapturedFields, withSharedPrefixCache } from "../cached-request.ts";
 
 const user = (text: string, timestamp: number) => ({ role: "user", content: text, timestamp }) as AgentMessage;
 const entry = (id: string, message: AgentMessage) => ({ type: "message", id, parentId: null, timestamp: "", message }) as SessionEntry;
@@ -50,6 +50,42 @@ test("trailing messages are the branch entries after the captured transcript", (
 		entry("b", reply),
 	];
 	assert.deepEqual(trailingMessages(entries, [prompt]), { messages: [reply] });
+});
+
+test("extension messages after the captured request are trailing, and one that ended it is found by its content and stamp", () => {
+	const notice = (id: string, text: string, at: string) =>
+		({ type: "custom_message", id, parentId: null, timestamp: at, customType: "subagent-notify", content: text, display: true }) as SessionEntry;
+	const reply = { role: "assistant", content: [{ type: "text", text: "noted" }], timestamp: Date.parse("2026-10-21T10:00:06.000Z") } as AgentMessage;
+	const entries = [entry("u", user("go", 1)), notice("c1", "run done", "2026-10-21T10:00:05.000Z"), entry("a", reply), notice("c2", "run done", "2026-10-21T10:00:09.000Z")];
+	// The request carried the first notice as sent, before Pi stamped its entry; an identical one came later.
+	const sent = { role: "custom", customType: "subagent-notify", content: "run done", display: true, timestamp: Date.parse("2026-10-21T10:00:04.000Z") } as AgentMessage;
+	const result = trailingMessages(entries, [user("go", 1), sent]);
+	assert.ok("messages" in result, JSON.stringify(result));
+	assert.deepEqual(result.messages.map((message) => message.role), ["assistant", "custom"]);
+});
+
+test("fields an earlier extension added to the agent's request are carried into the summary request", () => {
+	const captured = { model: "gpt", service_tier: "priority", input: [{ role: "user", content: "hi" }] };
+	const rebuilt = withCapturedFields(captured, { model: "gpt", input: [...captured.input, { role: "user", content: "summarize" }] });
+	assert.equal(rebuilt.service_tier, "priority");
+	assert.equal(prefixMismatch(captured, rebuilt, "input"), undefined);
+});
+
+test("the kept start is the first kept message the request carries, with tool calls quoted and repeats counted from the end", () => {
+	const call = (timestamp: number) =>
+		({ role: "assistant", content: [{ type: "thinking", thinking: "..." }, { type: "toolCall", id: `t${timestamp}`, name: "bash", arguments: { command: "ls" } }], timestamp }) as AgentMessage;
+	const entries = [
+		{ type: "thinking_level_change", id: "k", parentId: null, timestamp: "", thinkingLevel: "high" } as SessionEntry,
+		{ ...entry("a1", call(1)), parentId: "k" } as SessionEntry,
+		{ ...entry("a2", call(2)), parentId: "a1" } as SessionEntry,
+	];
+	assert.deepEqual(keptStart(entries, "k", [user("start", 0), call(1), call(2)]), { text: '[tool call: bash {"command":"ls"}]', fromEnd: 2 });
+	// A `!!` command is kept in the session but never sent to the model.
+	const hidden = { role: "bashExecution", command: "git status", output: "", exitCode: 0, cancelled: false, truncated: false, excludeFromContext: true, timestamp: 4 } as AgentMessage;
+	const afterHidden = [entry("b", hidden), { ...entry("n", user("next", 5)), parentId: "b" } as SessionEntry];
+	assert.deepEqual(keptStart(afterHidden, "b", [hidden, user("next", 5)]), { text: "next", fromEnd: 1 });
+	const thinkingOnly = { role: "assistant", content: [{ type: "thinking", thinking: "..." }], timestamp: 3 } as AgentMessage;
+	assert.equal(keptStart([entry("a3", thinkingOnly)], "a3", [thinkingOnly]), undefined);
 });
 
 test("a field the provider keeps out of the cached prefix may differ only when named", () => {
