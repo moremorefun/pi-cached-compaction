@@ -1,0 +1,62 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import { prefixMismatch, trailingMessages } from "../cached-request.ts";
+
+const user = (text: string, timestamp: number) => ({ role: "user", content: text, timestamp }) as AgentMessage;
+const entry = (id: string, message: AgentMessage) => ({ type: "message", id, parentId: null, timestamp: "", message }) as SessionEntry;
+
+test("a request that only appends turns and moves the cache breakpoint matches", () => {
+	const captured = {
+		model: "m",
+		system: [{ type: "text", text: "sys", cache_control: { type: "ephemeral" } }],
+		max_tokens: 100,
+		messages: [
+			{ role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }] },
+			{ role: "system", content: [], output_config: { effort: "high" } },
+		],
+	};
+	const rebuilt = {
+		...captured,
+		max_tokens: 90,
+		messages: [
+			{ role: "user", content: [{ type: "text", text: "hi" }] },
+			{ role: "assistant", content: [{ type: "text", text: "hello" }] },
+			{ role: "user", content: [{ type: "text", text: "summarize", cache_control: { type: "ephemeral" } }] },
+		],
+	};
+	assert.equal(prefixMismatch(captured, rebuilt, "messages"), undefined);
+});
+
+test("a changed prefix or request field is reported", () => {
+	const captured = { model: "m", messages: [{ role: "user", content: "hi" }] };
+	assert.equal(
+		prefixMismatch(captured, { model: "m", messages: [{ role: "user", content: "edited" }, { role: "user", content: "x" }] }, "messages"),
+		"message 0 differs",
+	);
+	assert.equal(
+		prefixMismatch(captured, { model: "other", messages: [...captured.messages, { role: "user", content: "x" }] }, "messages"),
+		'request field "model" differs',
+	);
+});
+
+test("trailing messages are the branch entries after the captured transcript", () => {
+	const prompt = user("fix the bug", 1);
+	const reply = { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 2 } as AgentMessage;
+	const entries = [
+		entry("a", prompt),
+		{ type: "label", id: "l", parentId: "a", timestamp: "", targetId: "a", label: "x" } as SessionEntry,
+		entry("b", reply),
+	];
+	assert.deepEqual(trailingMessages(entries, [prompt]), [reply]);
+});
+
+test("a branch that no longer contains the captured transcript is rejected", () => {
+	assert.equal(trailingMessages([entry("a", user("other branch", 5))], [user("fix the bug", 1)]), undefined);
+	const withSummary = [
+		entry("a", user("fix the bug", 1)),
+		{ type: "branch_summary", id: "s", parentId: "a", timestamp: "", summary: "...", fromId: "x" } as SessionEntry,
+	];
+	assert.equal(trailingMessages(withSummary, [user("fix the bug", 1)]), undefined);
+});
