@@ -147,19 +147,19 @@ Pi's serializer keeps the first 2,000 characters of each tool result (`truncateF
 
 Only 11–29% of the results run past 2,000 characters, but they hold most of the output, so 300k to 1M characters per session never reach the summarizer. This counts the whole session; Pi keeps its most recent 20k tokens out of the summary, so the summarized part loses slightly less.
 
-## Rechecked on the current bridge
+## Mid-run compaction and large tool results
 
-Rerun on pi-claude-bridge `c459fde` and Claude Code 2.1.308, `pi-claude/claude-opus-5-5` at thinking high, in a separate agent directory:
+`pi-claude/claude-opus-5-5` at thinking high with Claude Code 2.1.308, in a separate agent directory. The mid-run test sets the threshold about 40k tokens in and has the model read files one per response:
 
-| Test | Bridge | Read from cache |
+| Test | Bridge `c459fde` | Bridge `c015275` |
 |---|---|---|
-| One read of a 108 KB file, two short turns, then `/compact` | copied 9/9 messages | 4,236 of 4,971 (85%) |
-| Auto-compaction mid-run (threshold at about 40k, files read one per response), first | nothing to copy yet, imported all 8 messages | 1,960 of 45,695 (4%) |
-| The same run's second auto-compaction | copied 4 of 10, imported the run's 6 | 1,960 of 50,155 (4%) |
+| One read of a 108 KB file, two short turns, then `/compact` | copied 9/9 messages, 4,236 of 4,971 from the cache (85%) | copied 9/9, 4,157 of 4,804 (87%) |
+| Auto-compaction mid-run, first | nothing to copy yet, 1,960 of 45,695 (4%) | copied 8/10 from the running query, 39,329 of 51,491 (76%) |
+| The same run's second auto-compaction | copied 4 of 10, 1,960 of 50,155 (4%) | copied 8/10, 38,840 of 51,231 (76%) |
 
 - Claude Code still keeps the 108 KB read as a file with a 2 KB preview, so that's what the summary sees.
-- A compaction in the middle of a run reads only the tool definitions (1,960 tokens), even for the messages the bridge copied. My two real auto-compactions that day (507k and 529k) were both mid-run and read 3,117. Filed as pi-claude-bridge#33: the fork sent a different system prompt from the live query's, a restart after a mid-run compaction ended the copied prefix early, and a fork during the session's first query had nothing to copy.
-- The same mid-run test on direct providers, through opencode-go, read everything the previous request had cached. Claude Haiku 5.5 read 39,647 of 51,776 (77%) and 38,663 of 51,021 (76%) against previous requests of 39,649 and 38,665. GPT-6 Luna read 36,140 of 43,663 (83%) against 36,143. The rest was the tool result that had just come back plus the instruction, about 12k tokens. So the mid-run miss is the bridge's alone.
+- On `c459fde` a mid-run fork read only the tool definitions (1,960 tokens), even for the messages the bridge copied. My two real auto-compactions that day (507k and 529k) were both mid-run and read 3,117. The fork sent a different system prompt from the live query's, a restart after a mid-run compaction ended the copied prefix early, and a fork during the session's first query had nothing to copy. pi-claude-bridge `c015275` fixed all three: each fork now reads everything the previous request had cached (39,331 and 38,842).
+- The same mid-run test on direct providers, through opencode-go, also read everything the previous request had cached. Claude Haiku 5.5 read 39,647 of 51,776 (77%) and 38,663 of 51,021 (76%) against previous requests of 39,649 and 38,665. GPT-6 Luna read 36,140 of 43,663 (83%) against 36,143. The rest is the tool result that had just come back plus the instruction, about 12k tokens, a small share at real session sizes.
 
 ## Not yet tested live
 
