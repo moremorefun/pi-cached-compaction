@@ -374,6 +374,8 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			response = await ctx.modelRegistry
 				.streamSimple(request.model, { messages: convertToLlm([...request.transcript, ...trailing, instruction]) }, {
 				reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
+				// Pi's own limit for a summary, so it fits the room Pi reserves for it. The output limit is not part of the cached prefix.
+				maxTokens: Math.min(Math.floor(0.8 * preparation.settings.reserveTokens), request.model.maxTokens > 0 ? request.model.maxTokens : Infinity),
 				sessionId: ctx.sessionManager.getSessionId(),
 				signal: AbortSignal.any([event.signal, controller.signal]),
 				...(disableTools ? { toolChoice: "none" as const } : {}),
