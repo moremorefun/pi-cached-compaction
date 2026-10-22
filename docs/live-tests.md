@@ -158,7 +158,7 @@ Rerun on pi-claude-bridge `c459fde` and Claude Code 2.1.308, `pi-claude/claude-o
 | The same run's second auto-compaction | copied 4 of 10, imported the run's 6 | 1,960 of 50,155 (4%) |
 
 - Claude Code still keeps the 108 KB read as a file with a 2 KB preview, so that's what the summary sees.
-- A compaction in the middle of a run reads only the system prompt and tools (1,960 tokens), even for the messages the bridge copied. My two real auto-compactions that day (507k and 529k) were both mid-run and read 3,117. Filed as pi-claude-bridge#33.
+- A compaction in the middle of a run reads only the tool definitions (1,960 tokens), even for the messages the bridge copied. My two real auto-compactions that day (507k and 529k) were both mid-run and read 3,117. Filed as pi-claude-bridge#33: the fork sent a different system prompt from the live query's, a restart after a mid-run compaction ended the copied prefix early, and a fork during the session's first query had nothing to copy.
 
 ## Not yet tested live
 
