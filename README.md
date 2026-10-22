@@ -2,6 +2,8 @@
 
 Pi compaction that reads the prompt cache your session already built. On big sessions it costs a fraction of Pi's, and the summary is written from the full tool output instead of 2,000-character excerpts.
 
+https://github.com/user-attachments/assets/97c6c513-afa1-4c56-a2f3-91349e9ff194
+
 ```
  cached compaction  (ctrl+o for details)
  07:42:48 /compact: cached, 99% of 667k from cache, 3k out, 29.5s, summary 5791 chars
