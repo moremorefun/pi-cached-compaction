@@ -4,17 +4,7 @@ Pi compaction that reads the prompt cache your session already built. On big ses
 
 https://github.com/user-attachments/assets/6c16cbae-8b96-4a3b-a3a6-b495d6370b0c
 
-```
- cached compaction  (ctrl+o for details)
- 07:42:48 /compact: cached, 99% of 667k from cache, 3k out, 29.5s, summary 5791 chars
-          vs Pi's compaction: 86% less, $0.19 instead of ~$1.4 (it sends ~328k tokens, none from cache)
- 07:42:48   saved, 666k tokens summarized
-
- ──────────────────────────────────────────────────────────────────────────
- > _
- ──────────────────────────────────────────────────────────────────────────
- ~/pi-subagents-app                          ⏱ 59m · claude-opus-5-5 · high
-```
+![The cached compaction card in Pi: "07:42:48 /compact: cached, 99% of 667k from cache, 3k out, 29.5s, summary 5791 chars. vs Pi's compaction: 86% less, $0.19 instead of ~$1.4 (it sends ~328k tokens, none from cache). 07:42:48 saved, 666k tokens summarized." The footer below it reads "~/pi-subagents-app ⏱ 59m · claude-opus-5-5 · high".](media/card-667k.png)
 
 A real card from a 667k-token Opus 5.5 session, a subagent implementing a GitHub issue over 393 responses, replayed through pi-claude-bridge. Claude Code bills by subscription, so the bridge's own card compares tokens; the dollars here are the same token counts at Anthropic's API prices for Opus 5.5. Two things the card doesn't show:
 
@@ -27,20 +17,11 @@ Pi's compaction swaps the system prompt, drops the tools, and flattens the messa
 
 It also cuts every tool result down to its first 2,000 characters, and the bigger the session, the more that throws away. Long sessions do their work in long outputs: whole files, test runs, build logs. The summarizer sees only the start of each one, so it misses the bottom of the file and the failures listed at the end of the test run. In eleven of my sessions that passed 700k tokens, Pi's compaction would have shown it 35–57% of the tool output, leaving out 300k to 1M characters per session.
 
-```
- one 40 KB test run, as the summarizer sees it
- Pi's compaction        [first 2,000 chars]░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  ← the failures are down here
- pi-cached-compaction   [the whole output, read from the cache              ]
-```
+![One 40 KB test run, as the summarizer sees it. Pi's compaction shows it the first 2,000 characters, and the failures are down at the end. pi-cached-compaction shows all of it, read from the cache.](media/test-run.png)
 
 I wrote this extension to keep the system prompt, the tools, and the messages as they are, and append one instruction instead, as the next turn of the same conversation:
 
-```
-Pi's compaction        [summarizer prompt] [older messages as text, tool output cut]      nothing cached
-
-pi-cached-compaction   [tools] [system prompt] [msg 1 … msg N] [summarize this]
-                       └──── same bytes as your last turn ───┘ └──── new ────┘      ~99% cached
-```
+![What each compaction sends. Pi's compaction: a summarizer prompt, then the older messages as text with tool output cut; nothing from cache. pi-cached-compaction: the tools, the system prompt and messages 1 to N, the same bytes as your last turn, plus a new "summarize this" instruction; about 99% from cache.](media/what-it-sends.png)
 
 The provider reads nearly all of it from the cache at about a tenth of the input price, and the model writing the summary sees the whole conversation, tool output included. The result looks like Pi's: its checkpoint format, its window of recent messages kept as they are, and the read and modified file lists carried forward.
 
@@ -78,34 +59,13 @@ Then run `/reload`. It needs Pi 0.87.0 or newer, and everything is on by default
 
 **When the cache can't be used,** the card says why and what Pi's compaction did instead. Expand it with ctrl+o to see what the decision rested on:
 
-```
- cached compaction
- 13:48:54 /compact: Pi's compaction, request field "reasoning" differs
-          cache: lifetime 30 min (OpenAI's minimum), 30 min left
-          last request: 4 s ago, 20 messages, 2k prompt tokens, 1 new since
-          request: thinking low, shared 12h prefix
-          last request had: {"effort":"high","summary":"auto"}
-          summary request had: {"effort":"low","summary":"auto"}
- 13:48:59   Pi's compaction saved: 0% of 923 from cache, 384 out, $0.0003, summary 1243 chars
- log: ~/.pi/agent/cached-compaction.jsonl
-```
+![The expanded card: "13:48:54 /compact: Pi's compaction, request field "reasoning" differs. cache: lifetime 30 min (OpenAI's minimum), 30 min left. last request: 4 s ago, 20 messages, 2k prompt tokens, 1 new since. request: thinking low, shared 12h prefix. last request had: {"effort":"high","summary":"auto"}. summary request had: {"effort":"low","summary":"auto"}. 13:48:59 Pi's compaction saved: 0% of 923 from cache, 384 out, $0.0003, summary 1243 chars. log: ~/.pi/agent/cached-compaction.jsonl"](media/card-fallback.png)
 
 **The countdown** in the footer shows how long the cache has left. Sending a message restarts it, and it goes `⏱ 59m … ⏱ 2m … ⏱ 0:25` (in the warning color for the last 30 seconds), then `cache cold`. In powerline-footer it shows in the `extension_statuses` segment. The lifetime comes from the cache tier the provider reports writing (Anthropic and pi-claude-bridge report it), else the model's declared lifetime, else OpenAI's 30-minute minimum for GPT-5.6 and later. Models with none of those show no countdown.
 
 **`/cached-compaction`** shows the cache right now, whether the next compaction would take the cached path, and this session's log:
 
-```
-pi-cached-compaction · opencode-go/gpt-6-luna
-cache: ⏱ 29m left (lifetime 30 min, OpenAI's minimum)
-next compaction: cached path; last request 4 s ago with 186 messages, 1 since. The request prefix is checked when it runs.
-before expiry: on, from 50k tokens of context · retention long
-log: ~/.pi/agent/cached-compaction.jsonl
-
-This session:
-23:43:49 /compact: cached, 99% of 50k from cache, 2k out, 11.3s, summary 3263 chars
-         vs Pi's compaction: 62% less, $0.0013 instead of ~$0.0035 (it sends ~27k tokens, none from cache)
-23:43:49   saved, 49k tokens summarized
-```
+![The output of /cached-compaction: "pi-cached-compaction · opencode-go/gpt-6-luna. cache: ⏱ 29m left (lifetime 30 min, OpenAI's minimum). next compaction: cached path; last request 4 s ago with 186 messages, 1 since. The request prefix is checked when it runs. before expiry: on, from 50k tokens of context · retention long. log: ~/.pi/agent/cached-compaction.jsonl. This session: 23:43:49 /compact: cached, 99% of 50k from cache, 2k out, 11.3s, summary 3263 chars. vs Pi's compaction: 62% less, $0.0013 instead of ~$0.0035 (it sends ~27k tokens, none from cache). 23:43:49 saved, 49k tokens summarized."](media/status-command.png)
 
 **The log.** Every decision is also appended to `~/.pi/agent/cached-compaction.jsonl`, which moves to `.1` past 5 MB. Each line records what triggered the compaction, the path it took and why, the request settings, the provider's cache usage, the estimate for Pi's compaction, and the timing. When the request didn't match, it includes up to 200 characters of each version around the first difference. The log stays on your machine.
 
@@ -234,10 +194,7 @@ If any check fails, Pi's own compaction runs. When compacting before expiry, not
 
 **Where the summary stops.** Pi keeps about the last 20k tokens of messages (its `keepRecentTokens` setting) word for word after the summary. The extension uses Pi's own cut point, so the summary has to stop where those messages begin. But the model reads the kept messages too, since they're part of the cached conversation:
 
-```
- msg 1 … msg K-1           msg K … msg N              + "Summarize what comes before the
- └── summarized ──┘        └── Pi keeps these ──┘        message starting with: <msg K>"
-```
+![Where the summary stops. Messages 1 to K-1 are summarized, Pi keeps messages K to N word for word, and the new instruction says: Summarize what comes before the message starting with the text of message K.](media/summary-boundary.png)
 
 So the instruction quotes the first kept message as the model sees it (and says which repeat it is, if that text appears more than once), says how many messages are kept, and tells the model to write the summary as if the conversation ended before the quoted one. In my repeated tests where Pi's cut fell in the middle of a turn, no summary reported kept work as done. If the first kept message has nothing to quote (only an image, or only thinking), it doesn't guess: Pi's own compaction runs.
 

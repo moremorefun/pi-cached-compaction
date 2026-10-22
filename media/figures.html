@@ -1,0 +1,130 @@
+<!doctype html>
+<!-- Source for the README figures. Edit here, then run: node media/render-figures.mjs -->
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:Plantin;src:url(https://pi.dev/fonts/PlantinNowVariable-Upright.woff2) format("woff2");font-weight:200 800;font-style:normal}
+@font-face{font-family:Plantin;src:url(https://pi.dev/fonts/PlantinNowVariable-Italic.woff2) format("woff2");font-weight:200 800;font-style:italic}
+@font-face{font-family:Departure;src:url(https://pi.dev/fonts/DepartureMono-Regular.woff2) format("woff2")}
+*{box-sizing:border-box}
+html,body{margin:0;background:transparent;-webkit-font-smoothing:antialiased}
+figure{margin:0 0 40px;width:960px}
+
+/* Terminal figures: Pi's dark theme colors */
+.term{border-radius:10px;overflow:hidden;background:#15171c;border:1px solid #3a3f47}
+.term .bar{height:30px;background:#24272e;display:flex;align-items:center;gap:8px;padding:0 12px}
+.term .bar i{width:11px;height:11px;border-radius:50%;background:#ff5f57}
+.term .bar i:nth-child(2){background:#febc2e}
+.term .bar i:nth-child(3){background:#28c840}
+.term .bar span{margin-left:10px;font:12px/1 -apple-system,"Segoe UI",sans-serif;color:#7e888e}
+.term pre{margin:0;padding:14px 18px 16px;font:12px/1.6 "SF Mono",ui-monospace,Menlo,monospace;color:#dee0e1;white-space:pre}
+.acc{color:#a798d7}.mut{color:#9da5a9}.dim{color:#7e888e}.ok{color:#68b78d}.warn{color:#cd9a22}.rule{color:#5a6369}
+
+/* Concept figures: the video's paper, type and colors */
+.paper{border-radius:8px;border:1px solid rgba(139,132,125,.5);padding:28px 36px 30px;color:#252f3d;font:16px/1 Departure,monospace;background-color:#ebe7e4;
+  background-image:linear-gradient(rgba(75,96,124,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(75,96,124,.045) 1px,transparent 1px);background-size:20px 20px}
+.kicker{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#5c5752;margin:0 0 26px}
+.row{display:flex;align-items:center;white-space:pre;color:#384251}
+.lab{width:200px;flex:none;color:#8b847d;font-size:12px;letter-spacing:.07em;text-transform:uppercase}
+.seg{padding:0 1px 6px;margin-right:4px}
+.seg.c{color:#4b607c;box-shadow:inset 0 -3px 0 #6a9fcc}
+.seg.k{color:#4b607c;box-shadow:inset 0 -3px 0 rgba(106,159,204,.4)}
+.seg.f{color:#844f3b;background:repeating-linear-gradient(135deg,rgba(184,107,82,0) 0 4px,rgba(184,107,82,.3) 4px 6px) bottom/100% 6px no-repeat;box-shadow:inset 0 -2px 0 #b86b52}
+.seg.n{color:#8a5a12;background:rgba(225,176,110,.22);box-shadow:inset 0 -3px 0 #e1b06e}
+.seg.wide{display:inline-flex;justify-content:space-between}
+.res{display:flex;align-items:baseline;gap:10px;margin:10px 0 0 200px;font-size:12px;letter-spacing:.07em;text-transform:uppercase;color:#8b847d}
+.v{font:italic 400 26px/1 Plantin,Georgia,serif;letter-spacing:0;text-transform:none}
+.v.bad{color:#844f3b}.v.good{color:#4b607c}
+.grp{position:relative;display:inline-block;padding-bottom:30px}
+.grp::after{content:"";position:absolute;left:1px;right:5px;bottom:17px;height:7px;border:1.5px solid #8b847d;border-top:0}
+.grp em{position:absolute;left:0;right:0;bottom:0;text-align:center;font-style:normal;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:#5c5752}
+.track{position:relative;flex:none;width:420px;height:22px;border:1.5px solid #8b847d;border-radius:2px;background:repeating-linear-gradient(135deg,transparent 0 6px,rgba(139,132,125,.22) 6px 8px)}
+.track b{position:absolute;left:0;top:0;bottom:0}
+.track .pi{width:5%;background:#b86b52}
+.track .us{width:100%;background:#6a9fcc}
+.under{width:420px;margin:8px 0 0 200px;text-align:right;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:#844f3b}
+.quote{margin:18px 0 0;font:italic 400 22px/1.3 Plantin,Georgia,serif;color:#252f3d}
+.quote .mono{font:15px Departure,monospace;color:#8a5a12}
+</style></head>
+<body>
+
+<figure id="card-667k">
+<div class="term"><div class="bar"><i></i><i></i><i></i><span>pi</span></div>
+<pre> <span class="acc">cached compaction</span>  <span class="mut">(</span><span class="dim">ctrl+o</span><span class="mut"> for details)</span>
+ 07:42:48 /compact: cached, 99% of 667k from cache, 3k out, 29.5s, summary 5791 chars
+<span class="ok">          vs Pi's compaction: 86% less, $0.19 instead of ~$1.4 (it sends ~328k tokens, none from cache)</span>
+ 07:42:48   saved, 666k tokens summarized
+
+<span class="rule"> ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+ <span class="acc">›</span> _
+<span class="rule"> ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span>
+ <span class="dim">~/pi-subagents-app</span>                                                                       ⏱ 59m <span class="dim">· claude-opus-5-5 · high</span></pre></div>
+</figure>
+
+<figure id="test-run">
+<div class="paper">
+<div class="kicker">One 40 KB test run, as the summarizer sees it</div>
+<div class="row"><span class="lab">Pi's compaction</span><span class="track"><b class="pi"></b></span><span class="v bad" style="margin-left:22px">the first 2,000 chars</span></div>
+<div class="under">the failures are down here ↑</div>
+<div class="row" style="margin-top:22px"><span class="lab">pi-cached-compaction</span><span class="track"><b class="us"></b></span><span class="v good" style="margin-left:22px">all of it, from the cache</span></div>
+</div>
+</figure>
+
+<figure id="what-it-sends">
+<div class="paper">
+<div class="kicker">What each compaction sends</div>
+<div class="row"><span class="lab">Pi's compaction</span><span class="seg f">[summarizer prompt]</span><span class="seg f">[older messages as text, tool output cut]</span></div>
+<div class="res"><span class="v bad">nothing</span> from cache</div>
+<div class="row" style="margin-top:30px"><span class="lab">pi-cached-compaction</span><span class="grp"><span class="seg c">[tools]</span><span class="seg c">[system prompt]</span><span class="seg c">[msg 1 … msg N]</span><em>same bytes as your last turn</em></span><span class="grp"><span class="seg n">[summarize this]</span><em>new</em></span></div>
+<div class="res" style="margin-top:6px"><span class="v good">~99%</span> from cache</div>
+</div>
+</figure>
+
+<figure id="card-fallback">
+<div class="term"><div class="bar"><i></i><i></i><i></i><span>pi</span></div>
+<pre> <span class="acc">cached compaction</span>
+<span class="warn"> 13:48:54 /compact: Pi's compaction, request field "reasoning" differs</span>
+<span class="dim">          cache: lifetime 30 min (OpenAI's minimum), 30 min left
+          last request: 4 s ago, 20 messages, 2k prompt tokens, 1 new since
+          request: thinking low, shared 12h prefix
+          last request had: {"effort":"high","summary":"auto"}
+          summary request had: {"effort":"low","summary":"auto"}</span>
+ 13:48:59   Pi's compaction saved: 0% of 923 from cache, 384 out, $0.0003, summary 1243 chars
+<span class="dim"> log: ~/.pi/agent/cached-compaction.jsonl</span></pre></div>
+</figure>
+
+<figure id="status-command">
+<div class="term"><div class="bar"><i></i><i></i><i></i><span>pi</span></div>
+<pre class="dim"> pi-cached-compaction · opencode-go/gpt-6-luna
+ cache: ⏱ 29m left (lifetime 30 min, OpenAI's minimum)
+ next compaction: cached path; last request 4 s ago with 186 messages, 1 since. The request prefix is checked when it runs.
+ before expiry: on, from 50k tokens of context · retention long
+ log: ~/.pi/agent/cached-compaction.jsonl
+
+ This session:
+ 23:43:49 /compact: cached, 99% of 50k from cache, 2k out, 11.3s, summary 3263 chars
+          vs Pi's compaction: 62% less, $0.0013 instead of ~$0.0035 (it sends ~27k tokens, none from cache)
+ 23:43:49   saved, 49k tokens summarized</pre></div>
+</figure>
+
+<figure id="summary-boundary">
+<div class="paper">
+<div class="kicker">Where the summary stops</div>
+<div class="row"><span class="grp"><span class="seg c wide" style="width:390px"><span>[msg 1</span><span>…</span><span>msg K-1]</span></span><em>summarized</em></span><span class="grp"><span class="seg k wide" style="width:250px"><span>[msg K</span><span>…</span><span>msg N]</span></span><em>Pi keeps these word for word</em></span><span class="grp"><span class="seg n">[summarize]</span><em>new</em></span></div>
+<p class="quote">“Summarize what comes before the message starting with: <span class="mono">&lt;msg K&gt;</span>”</p>
+</div>
+</figure>
+
+<script>
+// ?fig=<id> keeps one figure and reports its height once the fonts load; render-figures.mjs reads it.
+const id = new URLSearchParams(location.search).get("fig");
+if (id) {
+	for (const figure of document.querySelectorAll("figure")) if (figure.id !== id) figure.remove();
+	const figure = document.getElementById(id);
+	figure.style.marginBottom = "0";
+	Promise.all([...document.fonts].map((font) => font.load())).then(
+		() => { document.body.dataset.height = String(Math.ceil(figure.getBoundingClientRect().height)); },
+		(error) => { document.body.dataset.error = String(error); },
+	);
+}
+</script>
+</body></html>
