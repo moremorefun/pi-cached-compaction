@@ -6,7 +6,7 @@
   "keywords": ["pi-package", "pi", "coding-agent", "compaction", "prompt-cache", "extension"],
   "author": "Nico Bailon",
   "license": "MIT",
-  "files": ["*.ts", "README.md", "!progress.md"],
+  "files": ["*.ts", "README.md", "docs/"],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts"
