@@ -20,6 +20,26 @@ Unless noted, a run makes three tool-using turns (read, edit, bash), runs `/comp
 
 Every run that used tools left the edited file correct.
 
+## Where the summary stops
+
+Pi keeps the newest messages as they are, and the summary has to stop where they begin. To test that, `keepRecentTokens` was set to 100 so Pi's cut falls inside a two-turn session: usually on the `cat notes.txt` call in the middle of the first turn. A run counts as a leak when the summary's Done list reports a tool call from the kept messages.
+
+| Model | Earlier wording | Current wording |
+|---|---|---|
+| `opencode-go/claude-haiku-5-5` | 6 of 6 leaked | 0 of 6 |
+| `opencode-go/gpt-6-luna` | 2 of 3 leaked | 0 of 6 |
+
+The earlier wording quoted the first kept message and said to summarize only what came before it. The models often summarized the whole conversation anyway. The current wording also says how many messages are kept, tells the model to treat the conversation as ending before the quoted message, and repeats the stop point at the end. With it, the kept work shows up under Next Steps, as not yet done, or not at all.
+
+## Claude through opencode-go
+
+`claude-haiku-5-5` is the only Claude model on opencode-go. It uses Anthropic's Messages API, and opencode-go requires an `x-opencode-session` header, which Pi fills with the session id. The summary request uses the same session id, so it's routed like the agent's own requests.
+
+- opencode-go honors the 1-hour cache and reports it: every write came back as `ephemeral_1h_input_tokens`. The countdown showed `⏱ 60m`, "reported by the provider".
+- The 1-hour lifetime holds. Two 24k-token prefixes were written side by side, one with a 1-hour TTL and one with 5 minutes. After 6.7 idle minutes the 1-hour one was read in full from the cache, and the 5-minute one had expired and was written again. These were direct API requests.
+- Two compactions of a 3k-token session took the cached path: 3,088 of 3,634 prompt tokens from the cache (85%), then 3,461 of 4,034 (86%).
+- This run also found the second summary listing `<modified-files>` twice. The model had copied the block from the first summary. File lists in the model's text are now replaced by the merged ones.
+
 ## GPT through opencode-go
 
 `gpt-6-luna` / `gpt-5.6-luna`:

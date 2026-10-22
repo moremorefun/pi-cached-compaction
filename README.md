@@ -97,7 +97,7 @@ Pi keeps about the last 20k tokens of messages (its `keepRecentTokens` setting) 
  └──────────────────────────────┴─────────────────────────────┴────────────────────┘
 ```
 
-The model still reads the kept messages, since they're part of the cached prefix. In the live tests the summaries stopped at the quoted message and didn't repeat what came after it.
+The model still reads the kept messages, since they're part of the cached prefix. So the instruction also says how many messages are kept, and tells the model to write the summary as if the conversation ended before the quoted one. In repeated tests where Pi's cut fell in the middle of a turn, no summary reported kept work as done ([details](docs/live-tests.md#where-the-summary-stops)).
 
 If the first kept message has nothing to quote (only an image, or only thinking), it doesn't guess: Pi's own compaction runs.
 
@@ -139,6 +139,7 @@ In interactive sessions the extension also asks for the longer cache (`PI_CACHE_
  ───────────────────────────  ────────────  ───────────────────────  ──────────────────────────
  Claude via pi-claude-bridge  ✓ (fork)      ✓ 1 h                    Claude Code decides
  Anthropic API                ✓             ✓ 1 h                    1 h instead of 5 min
+ Claude on opencode-go        ✓             ✓ 1 h                    1 h instead of 5 min
  GPT-5.6+ on openai           ✓ ¹           ✓ 30 min                 12 h shared system prompt
  GPT-5.6+ on opencode-go      ✓             ✓ with the flag ²        the same, with the flag ²
  other Responses and          ✓             with a declared          the provider's own
