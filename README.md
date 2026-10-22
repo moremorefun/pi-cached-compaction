@@ -20,13 +20,22 @@ A real card from one of my test sessions: about 50k tokens of reading source fil
 
 Pi's compaction swaps the system prompt, drops the tools, and flattens the messages into text. None of that matches what the provider has cached, so every token of the summary request is billed at full price.
 
-I wrote this extension to keep all three as they are and append one instruction instead, as the next turn of the same conversation. The provider reads nearly all of it from the cache at about a tenth of the input price, and the model writing the summary sees the whole conversation, tool output included. The result looks like Pi's: its checkpoint format, its window of recent messages kept as they are, and the read and modified file lists carried forward.
+I wrote this extension to keep all three as they are and append one instruction instead, as the next turn of the same conversation:
+
+```
+Pi's compaction        [summarizer prompt] [older messages as text, tool output cut]      nothing cached
+
+pi-cached-compaction   [tools] [system prompt] [msg 1 … msg N] [summarize this]
+                       └──── same bytes as your last turn ───┘ └──── new ────┘      ~99% cached
+```
+
+The provider reads nearly all of it from the cache at about a tenth of the input price, and the model writing the summary sees the whole conversation, tool output included. The result looks like Pi's: its checkpoint format, its window of recent messages kept as they are, and the read and modified file lists carried forward.
 
 ## vs Pi's compaction
 
 - **Reads the cache.** About 99% of the summary request comes from the cache at normal compaction sizes.
 - **Sees all the tool output.** Pi's compaction shows the model the first 2,000 characters of each tool result. This one shows all of it.
-- **Shows what it saved.** Each compaction gets a card comparing its cost with what Pi's compaction would have cost for the same messages.
+- **Compares itself with Pi's.** Each compaction gets a card showing its cost next to what Pi's compaction would have cost for the same messages.
 - **Compacts before the cache expires.** If you step away, it compacts from the warm cache, so your next message doesn't pay to write the whole session again.
 - **Falls back cleanly.** It checks that the request repeats your last one byte for byte up to the new part. When it can't prove that, Pi's own compaction runs as usual. (Claude through pi-claude-bridge is checked by the bridge instead; see [Providers](#providers).)
 
@@ -40,13 +49,6 @@ I wrote this extension to keep all three as they are and append one instruction 
 | Cache lifetime | Pi's default (5 minutes on Anthropic) | 1 hour in interactive sessions, which Anthropic bills at 2× per write instead of 1.25× ([why](#compacting-before-the-cache-expires)) |
 | What you see | the summary | the summary, a card comparing the cost with Pi's compaction, and a cache countdown in the footer |
 
-```
-Pi's compaction        [summarizer prompt] [older messages as text, tool output cut]      nothing cached
-
-pi-cached-compaction   [tools] [system prompt] [msg 1 … msg N] [summarize this]
-                       └──── same bytes as your last turn ───┘ └──── new ────┘      ~99% cached
-```
-
 ## Install
 
 ```bash
@@ -57,11 +59,11 @@ Then run `/reload`. It needs Pi 0.87.0 or newer, and everything is on by default
 
 ## What you'll see
 
-The card at the top appears under the summary after each compaction. It's shown to you only, never sent to the model, and stays in the session after a resume.
+**The card** at the top appears under the summary after each compaction. It's shown to you only, never sent to the model, and stays in the session after a resume. Its second line compares this compaction with what Pi's would have cost for the same messages: green when this one cost at least 5% less, amber when it cost at least 5% more, and "about the same" in between. Models with no price, like Claude Code's subscription models through pi-claude-bridge, get the comparison in tokens not read from the cache instead of dollars.
 
-Its second line compares this compaction with what Pi's would have cost for the same messages. It's green when this one cost at least 5% less, amber when it cost at least 5% more, and says "about the same" in between. Pi's side is an estimate, since Pi's compaction never runs. The extension serializes the messages exactly as Pi's compaction would, then turns characters into tokens at the rate the provider counted for this summary request, so it follows each model's tokenizer. In my tests it came within 2–12% of what Pi's compaction actually sent, always a little high. For the session above, Pi's compaction really cost $0.0032, so the true saving was 58%. Models with no price, like Claude Code's subscription models through pi-claude-bridge, get the comparison in tokens not read from the cache instead of dollars.
+**Pi's side is an estimate,** since Pi's compaction never runs. The extension serializes the messages exactly as Pi's compaction would, then counts tokens at the rate the provider counted for this summary request, so it follows each model's tokenizer. In my tests it came within 2–12% of what Pi's compaction actually sent, always a little high. For the session above, Pi's compaction really cost $0.0032, so the true saving was 58% rather than 62%.
 
-When the extension can't prove a cache hit, the card says why and what Pi's compaction did instead. Expand it with ctrl+o to see what the decision rested on:
+**When the cache can't be used,** the card says why and what Pi's compaction did instead. Expand it with ctrl+o to see what the decision rested on:
 
 ```
  cached compaction
@@ -75,7 +77,9 @@ When the extension can't prove a cache hit, the card says why and what Pi's comp
  log: ~/.pi/agent/cached-compaction.jsonl
 ```
 
-`/cached-compaction` shows the cache right now, whether the next compaction would take the cached path, and this session's log:
+**The countdown** in the footer shows how long the cache has left. Sending a message restarts it, and it goes `⏱ 59m … ⏱ 2m … ⏱ 0:25` (in the warning color for the last 30 seconds), then `cache cold`. In powerline-footer it shows in the `extension_statuses` segment. The lifetime comes from the cache tier the provider reports writing (Anthropic and pi-claude-bridge report it), else the model's declared lifetime, else OpenAI's 30-minute minimum for GPT-5.6 and later. Models with none of those show no countdown.
+
+**`/cached-compaction`** shows the cache right now, whether the next compaction would take the cached path, and this session's log:
 
 ```
 pi-cached-compaction · opencode-go/gpt-6-luna
@@ -90,7 +94,7 @@ This session:
 23:43:49   saved, 49k tokens summarized
 ```
 
-Every decision is also appended to `~/.pi/agent/cached-compaction.jsonl`, which moves to `.1` past 5 MB. Each line records what triggered the compaction, the path it took and why, the request settings, the provider's cache usage, the estimate for Pi's compaction, and the timing. When the request didn't match, it includes up to 200 characters of each version around the first difference. The log stays on your machine.
+**The log.** Every decision is also appended to `~/.pi/agent/cached-compaction.jsonl`, which moves to `.1` past 5 MB. Each line records what triggered the compaction, the path it took and why, the request settings, the provider's cache usage, the estimate for Pi's compaction, and the timing. When the request didn't match, it includes up to 200 characters of each version around the first difference. The log stays on your machine.
 
 ```sh
 jq -c 'select(.event == "compact") | {at, trigger, outcome, reason, cacheRead: .response.usage.cacheRead, piEstimate}' ~/.pi/agent/cached-compaction.jsonl
@@ -109,6 +113,24 @@ jq -c 'select(.event == "compact") | {at, trigger, outcome, reason, cacheRead: .
 | Get the countdown on another model | declare a lifetime with Pi's `modelOverrides.promptCache` |
 | Look through past decisions | the `jq` line under [What you'll see](#what-youll-see) |
 
+## Settings
+
+Add a `cachedCompaction` key to `~/.pi/agent/settings.json`. Project settings files don't apply to this key, and an unknown key is an error.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `compactBeforeExpiry` | `true` | compact 20 s before the cache expires, when idle |
+| `minContextTokens` | `50000` | the smallest context worth compacting before expiry |
+| `cacheRetention` | `"long"` | ask for the longer cache in interactive sessions (2× writes on Anthropic); `"short"` keeps Pi's default |
+
+```json
+{
+  "cachedCompaction": {
+    "compactBeforeExpiry": false
+  }
+}
+```
+
 ## Compacting before the cache expires
 
 If you step away, the cache expires and your next message pays to write the whole session again. So 20 seconds before expiry, the extension compacts from the still-warm cache, and your next message rewrites a summary-sized context instead. It only does this when:
@@ -118,11 +140,9 @@ If you step away, the cache expires and your next message pays to write the whol
 - the context holds at least 50k tokens (`minContextTokens`),
 - and the cached path is available.
 
-Otherwise it does nothing and the cache cools. Sending a message restarts the countdown, which goes `⏱ 59m … ⏱ 2m … ⏱ 0:25` (in the warning color for the last 30 seconds) and then `cache cold`. In powerline-footer it shows in the `extension_statuses` segment.
+Otherwise it does nothing and the cache cools. Models without a [countdown](#what-youll-see) never compact before expiry.
 
 The threshold is in tokens rather than percent because rewriting an expired cache costs in proportion to its size, and on 1M-token models a percentage would almost never trigger.
-
-The lifetime comes from the cache tier the provider reports writing (Anthropic and pi-claude-bridge report it), else the model's declared lifetime, else OpenAI's 30-minute minimum for GPT-5.6 and later. Models with none of those show no countdown and never compact before expiry.
 
 **The longer cache.** A 5-minute cache expires during most breaks, so in interactive sessions the extension asks for the longer one (`PI_CACHE_RETENTION=long`) unless you've set that variable yourself. That's 1 hour instead of 5 minutes on Anthropic, and a 12-hour shared system prompt on GPT-5.6 and later (see [Providers](#providers)). It isn't free on Anthropic: writing a 1-hour cache costs 2× the input price instead of 1.25×, though reads cost the same. Headless runs (`pi -p`, JSON mode, subagent processes) keep the short cache, since nobody pauses there. The choice is made once per session, because moving a cache up a tier means writing all of it again.
 
@@ -134,7 +154,7 @@ The lifetime comes from the cache tier the provider reports writing (Anthropic a
 | Anthropic API | yes | yes, 1 hour | 1 hour instead of 5 minutes |
 | Claude on opencode-go | yes | yes, 1 hour | 1 hour instead of 5 minutes |
 | GPT-5.6+ on `openai` | yes, not tested live yet | yes, 30 minutes | 12-hour shared system prompt |
-| GPT-5.6+ on opencode-go | yes | with the flag below | with the flag below |
+| GPT-5.6+ on opencode-go | yes | after `/cached-compaction cache-flag` (below) | after `cache-flag` |
 | Other Responses and Chat Completions APIs | yes | only with a declared lifetime (`modelOverrides.promptCache`) | the provider's own |
 | `openai-codex` (ChatGPT sign-in) | yes, not tested live yet | no, there's no documented lifetime | no |
 | Google and others | no, Pi's compaction runs | no | no |
@@ -169,29 +189,9 @@ The 12-hour write costs an extra 1.25× of that prefix once, and the second sess
 
 Pi's own cache warmer only runs for models with a declared lifetime. If you want it to keep caches warm during long runs, add `"promptCache": { "short": 1800, "long": 1800 }` next to `compat`.
 
-## Settings
-
-Add a `cachedCompaction` key to `~/.pi/agent/settings.json`. Project settings files don't apply to this key, and an unknown key is an error.
-
-| Setting | Default | What it does |
-|---|---|---|
-| `compactBeforeExpiry` | `true` | compact 20 s before the cache expires, when idle |
-| `minContextTokens` | `50000` | the smallest context worth compacting before expiry |
-| `cacheRetention` | `"long"` | ask for the longer cache in interactive sessions (2× writes on Anthropic); `"short"` keeps Pi's default |
-
-```json
-{
-  "cachedCompaction": {
-    "compactBeforeExpiry": false
-  }
-}
-```
-
 ## What it costs
 
-Pi's compaction sends only the older messages, as text with each tool result cut to 2,000 characters, and pays full price for them. This extension sends the whole session and pays the cache-read price for nearly all of it. Which one costs less depends on how much there is to summarize.
-
-On small sessions Pi's is often cheaper. Pi keeps the last 20k tokens as they are and summarizes only what's older, so it has little to send. The same goes for sessions that mostly read big files, since Pi cuts each result to 2,000 characters. Once the older part is most of the session, which is usually the case when auto-compaction fires, reading everything at 0.1× costs less than sending the older part at full price. The card shows both numbers every time, so you can see which case you're in.
+Pi's compaction keeps the last 20k tokens as they are and sends only what's older, as text with each tool result cut to 2,000 characters, at full price. This extension sends the whole session and pays the cache-read price (0.1×) for nearly all of it. So on small sessions, and on sessions that mostly read big files, Pi's is often cheaper: it has little to send. Once the older part is most of the session, which is usually the case when auto-compaction fires, reading everything at 0.1× costs less. The card shows both numbers every time, so you can see which case you're in.
 
 The part that isn't cached is the instruction (about 400–600 tokens, depending on the model) plus anything added since the last request. That stays about the same size, so the cached share grows with the session: in my tests 83% on a 2k-token session, 95% at 10k and 99% at 44k. For auto-compaction on a 200k model it works out to 99.7%. Auto-compaction can also fire in the middle of a run. Then the latest tool results are new too, but at that size they're still a small share.
 
@@ -231,7 +231,7 @@ So the instruction quotes the first kept message as the model sees it (and says 
 
 ## Limitations
 
-- Without a known cache lifetime, the extension can't tell a cold cache from a warm one. A compaction after a long break then pays to rewrite the whole session. Declare a lifetime with Pi's `modelOverrides.promptCache`, or turn on the opencode-go flag under [Providers](#providers).
+- Without a known cache lifetime, the extension can't tell a cold cache from a warm one. A compaction after a long break then pays to rewrite the whole session. Declare a lifetime with Pi's `modelOverrides.promptCache`, or, for GPT on opencode-go, run `/cached-compaction cache-flag`.
 - Through pi-claude-bridge the extension can't check the request. If the bridge can't copy the whole Claude Code conversation, the summary is still correct but reads less from the cache, and the card shows the low cache share.
 - Fields that extensions loaded before this one add to provider requests are copied into the summary request, such as codex-fast's `service_tier`. Changes from extensions loaded after it aren't seen, so the request can miss the cache. The summary is still correct, it just costs about what Pi's compaction would, and the card shows the low cache share.
 - When a later compaction falls back to Pi's own, its read and modified file lists start over. Pi doesn't carry the lists forward from an extension's compaction.
