@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { calculateCost, type Api, type AssistantMessage, type Model, type Usage } from "@earendil-works/pi-ai";
-import { convertToLlm, getLastAssistantUsage, getLatestCompactionEntry, keyHint, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, getAgentDir, getLastAssistantUsage, getLatestCompactionEntry, keyHint, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { cacheState, hasExplicitPromptCache, type CacheState } from "./cache-state.ts";
 import {
@@ -450,12 +452,35 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("cached-compaction", {
-		description: "Show the prompt cache state and this session's compaction log",
-		handler: async (_args, ctx) => {
+		description: "Show the prompt cache state and this session's compaction log; `cache-flag` turns on OpenAI's cache options for GPT on opencode-go",
+		handler: async (args, ctx) => {
+			// opencode-go passes OpenAI's cache options through, but Pi's catalog only flags these models on `openai`.
+			const flagless = ctx.modelRegistry.getAll().filter((m) => m.provider === "opencode-go" && m.api === "openai-responses" &&
+				!("supportsExplicitPromptCacheMode" in (m.compat ?? {})) && hasExplicitPromptCache(ctx.modelRegistry.find("openai", m.id) ?? m)).map((m) => m.id);
+			if (args.trim() === "cache-flag") {
+				if (flagless.length === 0) return ctx.ui.notify("Every opencode-go model that supports OpenAI's cache options already has the flag.", "info");
+				const path = join(getAgentDir(), "models.json");
+				let file;
+				try {
+					file = JSON.parse(existsSync(path) ? readFileSync(path, "utf8") : "{}");
+				} catch {
+					return ctx.ui.notify(`${path} has comments or isn't valid JSON, so add the flag by hand as the README shows.`, "error");
+				}
+				const overrides = ((file.providers ??= {})["opencode-go"] ??= {}).modelOverrides ??= {};
+				for (const id of flagless) ((overrides[id] ??= {}).compat ??= {}).supportsExplicitPromptCacheMode = true;
+				writeFileSync(path, `${JSON.stringify(file, null, 2)}\n`);
+				await ctx.modelRegistry.refresh({ providers: ["opencode-go"], allowNetwork: false });
+				// The session keeps its model object until it is set again; setting it resets the thinking level.
+				const current = ctx.model?.provider === "opencode-go" && flagless.includes(ctx.model.id) ? ctx.modelRegistry.find("opencode-go", ctx.model.id) : undefined;
+				const level = pi.getThinkingLevel();
+				if (current && (await pi.setModel(current))) pi.setThinkingLevel(level);
+				return ctx.ui.notify(`Turned on OpenAI's cache options in ${path} for opencode-go/${flagless.join(", opencode-go/")}.`, "info");
+			}
 			const entries = ctx.sessionManager.getBranch();
 			const model = ctx.model;
 			const state = model && cacheState(model, entries);
 			let cache = "lifetime unknown, so no countdown";
+			if (model?.provider === "opencode-go" && flagless.includes(model.id)) cache += "; run /cached-compaction cache-flag to get one";
 			if (state?.lifetime) {
 				let left = state.replied ? "the last request used no cache" : "no request since the session started or compacted";
 				if (state.expiresAt !== undefined) left = state.expiresAt > Date.now() ? `${formatRemaining(state.expiresAt - Date.now())} left` : "expired";

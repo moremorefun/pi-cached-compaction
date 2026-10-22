@@ -105,7 +105,7 @@ jq -c 'select(.event == "compact") | {at, trigger, outcome, reason, cacheRead: .
 | Stop compacting before the cache expires | `"compactBeforeExpiry": false` in [Settings](#settings) |
 | Compact before expiry only on bigger sessions | raise `minContextTokens` |
 | Keep Pi's 5-minute cache and its 1.25× writes on Anthropic | `"cacheRetention": "short"` |
-| Get the countdown for GPT on opencode-go | turn on the flag shown under [Providers](#providers) |
+| Get the countdown for GPT on opencode-go | `/cached-compaction cache-flag` (see [Providers](#providers)) |
 | Get the countdown on another model | declare a lifetime with Pi's `modelOverrides.promptCache` |
 | Look through past decisions | the `jq` line under [What you'll see](#what-youll-see) |
 
@@ -152,7 +152,7 @@ Claude Code bills by subscription, so the bridge prices these models at $0. Here
 
 The 12-hour write costs an extra 1.25× of that prefix once, and the second session in the project that day earns it back. With a full set of extensions the prefix is around 19k tokens. Pi prices every cache write at the 30-minute rate, so its cost display understates the 12-hour part.
 
-**opencode-go.** Pi doesn't send OpenAI's cache options to opencode-go's GPT models, so they get no 12-hour prefix and no countdown until you turn the options on in `~/.pi/agent/models.json`:
+**opencode-go.** Pi doesn't send OpenAI's cache options to opencode-go's GPT models, so they get no 12-hour prefix and no countdown until you turn the options on. Run `/cached-compaction cache-flag` and it adds them to `~/.pi/agent/models.json` for every opencode-go model that has them on `openai`, then switches the current session over. It rewrites the file as plain JSON, so if yours has comments it stops and you add this by hand:
 
 ```json
 {
