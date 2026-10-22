@@ -10,7 +10,7 @@
     "type": "git",
     "url": "git+https://github.com/nicobailon/pi-cached-compaction.git"
   },
-  "files": ["*.ts", "README.md", "docs/"],
+  "files": ["*.ts", "README.md", "CHANGELOG.md", "docs/"],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts"
