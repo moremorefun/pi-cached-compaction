@@ -113,6 +113,20 @@ So "5 minutes while working, 1 hour when idle" costs more than choosing 1 hour f
 
 On `pi-claude/claude-haiku-4-5` after three turns: 10,793 of 11,437 prompt tokens came from the cache, the main Claude Code transcript was unchanged, and the copy was deleted. Claude Code reports a 1-hour cache on a subscription, so the countdown showed `⏱ 59m`.
 
+## Opus 5.5 at 667k (the README's card)
+
+I copied a real session, an Opus 5.5 subagent implementing a GitHub issue (393 responses, 521 tool results), and opened it with pi-claude-bridge and this extension in a separate agent directory. One short turn put the conversation in Claude Code's cache (666,303 tokens written; the session had reported 767k when it ran), then `/compact` ran:
+
+- 665,973 of 667,091 prompt tokens came from the cache, 2,598 tokens out, 29.5 s.
+- Pi's compaction would have sent about 328k tokens (the card's estimate).
+- At Anthropic's API prices for `claude-opus-5-5` ($4/M input, $20/M output, $0.20/M cache reads, cache writes at the 1-hour rate of 2× input), that's $0.19 against about $1.40, 86% less. The bridge prices the model at $0, so these dollars come from running the logged token counts through Pi's `calculateCost`.
+- 109 of the 521 tool results were over 2,000 characters. Pi's serializer would have dropped 557,845 of their 918,846 characters (61%).
+- Had the cache expired instead, the next message would have written all 666k tokens again: $5.33 at the 1-hour rate.
+
+For comparison I also built an 895k-token session out of nothing but whole-file reads. There Pi's compaction would send only about 53k tokens, since it cuts every read to 2,000 characters, so the cached path was just 12% cheaper ($0.22 against about $0.25). That's the worst case the README describes.
+
+That run also showed Claude Code's own limit: it keeps a tool result over about 50 KB as a file and puts a 2 KB preview in the conversation. Through the bridge, the summary sees what the live model saw, previews included.
+
 ## Not yet tested live
 
 - The `openai` provider (no API credits). GPT-6 models there carry the reasoning effort as a trailing `configuration_update` item after the cache breakpoint, which the prefix check treats like Anthropic's trailing effort message. That path is checked against Pi's own OpenAI serializer for `gpt-6.1-sol` and `gpt-5.5`.

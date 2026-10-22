@@ -1,20 +1,23 @@
 # pi-cached-compaction
 
-Pi compaction that reads the prompt cache your session already built.
+Pi compaction that reads the prompt cache your session already built. On big sessions it costs a fraction of Pi's, and the summary is written from the full tool output instead of 2,000-character excerpts.
 
 ```
  cached compaction  (ctrl+o for details)
- 23:43:49 /compact: cached, 99% of 50k from cache, 2k out, 11.3s, summary 3263 chars
-          vs Pi's compaction: 62% less, $0.0013 instead of ~$0.0035 (it sends ~27k tokens, none from cache)
- 23:43:49   saved, 49k tokens summarized
+ 07:42:48 /compact: cached, 99% of 667k from cache, 3k out, 29.5s, summary 5791 chars
+          vs Pi's compaction: 86% less, $0.19 instead of ~$1.4 (it sends ~328k tokens, none from cache)
+ 07:42:48   saved, 666k tokens summarized
 
  ──────────────────────────────────────────────────────────────────────────
  > _
  ──────────────────────────────────────────────────────────────────────────
- ~/my-project                                     ⏱ 29m · gpt-6-luna · medium
+ ~/pi-subagents-app                          ⏱ 59m · claude-opus-5-5 · high
 ```
 
-A real card from one of my test sessions: about 50k tokens of reading source files on `gpt-6-luna`. The footer counts down how long the cache has left.
+A real card from a 667k-token Opus 5.5 session, a subagent implementing a GitHub issue over 393 responses, replayed through pi-claude-bridge. Claude Code bills by subscription, so the bridge's own card compares tokens; the dollars here are the same token counts at Anthropic's API prices for Opus 5.5. Two things the card doesn't show:
+
+- **The summary saw all the tool output.** Pi's compaction would have cut 109 of the session's 521 tool results to 2,000 characters, which drops 61% of the tool output before the model reads it.
+- **The footer counts down to the expensive part.** At this size, letting the cache expire means your next message rewrites all 667k tokens, $5.33 at the 1-hour rate. If Pi is idle, the extension compacts 20 seconds before that.
 
 ## Why this exists
 
@@ -61,7 +64,7 @@ Then run `/reload`. It needs Pi 0.87.0 or newer, and everything is on by default
 
 **The card** at the top appears under the summary after each compaction. It's shown to you only, never sent to the model, and stays in the session after a resume. Its second line compares this compaction with what Pi's would have cost for the same messages: green when this one cost at least 5% less, amber when it cost at least 5% more, and "about the same" in between. Models with no price, like Claude Code's subscription models through pi-claude-bridge, get the comparison in tokens not read from the cache instead of dollars.
 
-**Pi's side is an estimate,** since Pi's compaction never runs. The extension serializes the messages exactly as Pi's compaction would, then counts tokens at the rate the provider counted for this summary request, so it follows each model's tokenizer. In my tests it came within 2–12% of what Pi's compaction actually sent, always a little high. For the session above, Pi's compaction really cost $0.0032, so the true saving was 58% rather than 62%.
+**Pi's side is an estimate,** since Pi's compaction never runs. The extension serializes the messages exactly as Pi's compaction would, then counts tokens at the rate the provider counted for this summary request, so it follows each model's tokenizer. In my tests it came within 2–12% of what Pi's compaction actually sent, always a little high, so the card slightly overstates the saving.
 
 **When the cache can't be used,** the card says why and what Pi's compaction did instead. Expand it with ctrl+o to see what the decision rested on:
 
@@ -159,7 +162,7 @@ The threshold is in tokens rather than percent because rewriting an expired cach
 | `openai-codex` (ChatGPT sign-in) | yes, not tested live yet | no, there's no documented lifetime | no |
 | Google and others | no, Pi's compaction runs | no | no |
 
-**Claude through pi-claude-bridge.** These models run in Claude Code, so there's no HTTP payload for the extension to compare. Instead it sends the summary request with the bridge's `x-claude-bridge-fork: 1` header. The bridge runs it on a temporary copy of the live Claude Code conversation, which reads its cache, and then deletes the copy. The live conversation is only read. A bridge without fork support runs the request as a one-shot: the summary still works without the cache hit, and the card shows that.
+**Claude through pi-claude-bridge.** These models run in Claude Code, so there's no HTTP payload for the extension to compare. Instead it sends the summary request with the bridge's `x-claude-bridge-fork: 1` header. The bridge runs it on a temporary copy of the live Claude Code conversation, which reads its cache, and then deletes the copy. The live conversation is only read. A bridge without fork support runs the request as a one-shot: the summary still works without the cache hit, and the card shows that. Claude Code keeps any tool result over about 50 KB as a file with a 2 KB preview, so for those the summary sees the preview, the same as the live model did.
 
 Claude Code bills by subscription, so the bridge prices these models at $0. Here, compacting before expiry saves subscription quota and the slow first reply after a cold cache, not money. It also replaces the older part of the conversation with a summary well before Pi would compact a 1M-token model. If you'd rather keep the full context through long breaks, raise `minContextTokens` or turn it off. Claude Code also picks its own cache lifetime (1 hour on a subscription), so `cacheRetention` doesn't apply.
 
@@ -195,10 +198,11 @@ Pi's compaction keeps the last 20k tokens as they are and sends only what's olde
 
 The part that isn't cached is the instruction (about 400–600 tokens, depending on the model) plus anything added since the last request. That stays about the same size, so the cached share grows with the session: in my tests 83% on a 2k-token session, 95% at 10k and 99% at 44k. For auto-compaction on a 200k model it works out to 99.7%. Auto-compaction can also fire in the middle of a run. Then the latest tool results are new too, but at that size they're still a small share.
 
-What I measured with GPT through opencode-go, at the prices in Pi's model catalog:
+What I measured, at the prices in Pi's model catalog. The Opus row is the session at the top, priced at Anthropic's API rates, and its Pi column is the card's estimate. The rest are GPT through opencode-go, where I also ran Pi's compaction:
 
 | Session at compaction | Pi's compaction | pi-cached-compaction |
 |---|---|---|
+| 667k tokens, a real coding session (`claude-opus-5-5`) | ~328k sent, ~$1.40 | 667k sent, 99% cached, $0.19 |
 | 50k tokens, many small reads of source files (`gpt-6-luna`) | 26k sent, $0.0032 | 50k sent, 99% cached, $0.0013 |
 | 44k tokens, ten whole docs read (`gpt-6-luna`) | 5.9k sent, $0.00090 | 44k sent, 99% cached, $0.00097 |
 | 10k tokens, mostly long answers (`gpt-5.6-luna`) | 6.0k sent, $0.00224 | 10k sent, 95% cached, $0.00123 |
