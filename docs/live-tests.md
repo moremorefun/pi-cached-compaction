@@ -20,6 +20,28 @@ Unless noted, a run makes three tool-using turns (read, edit, bash), runs `/comp
 
 Every run that used tools left the edited file correct.
 
+## Pi's side of the card
+
+The card's comparison needs what Pi's compaction would have sent, without running it. The extension serializes the summarized messages with Pi's own `serializeConversation` (tool output cut to 2,000 characters, thinking left out), adds the previous summary, Pi's prompts, and the second request Pi makes for a split turn, and converts characters to tokens.
+
+Pi's usual rule of 4 characters per token was off by a third either way: +28% on GPT prose, −34% on Claude reading code. So the extension scales it by how the provider counted the summary request itself, which holds the same conversation: the provider's prompt tokens against Pi's estimate for those messages.
+
+To check it, each run built a session with the extension, saved a copy, and ran `/compact` on the cached path. Then the copy was resumed without the extension, so Pi's own compaction ran on the same messages, and its reported input was compared with the estimate.
+
+| Session | Model | Kept window | Estimate | Pi's compaction sent | Error | Pi's 4-chars rule alone |
+|---|---|---|---|---|---|---|
+| three whole files read | `gpt-6-luna` | 1.5k | 1,908 | 1,852 | +3.0% | +6.8% |
+| three 400-word answers | `gpt-6-luna` | 1.5k | 1,084 | 1,058 | +2.5% | +28% |
+| three whole files read | `claude-haiku-5-5` | 1.5k | 3,247 | 3,127 | +3.8% | −34% |
+| three 400-word answers | `claude-haiku-5-5` | 1.5k | 1,812 | 1,633 | +11% | −21% |
+| 31k: whole docs and long answers | `gpt-6-luna` | 20k | 1,851 | 1,651 | +12% | |
+| 50k: whole docs and long answers | `claude-haiku-5-5` | 20k | 2,973 | 2,698 | +10% | |
+| 50k: many small reads of source files | `gpt-6-luna` | 20k | 27,463 | 26,358 | +4.2% | |
+
+The estimate always came out a little high, so the card's saving reads a few points better than the real one: 62% on the last run, where the real costs ($0.0013 against $0.0032) give 58%. On the two sessions that read whole docs, Pi's compaction was the cheaper one ($0.00042 against $0.00075 on GPT, $0.00097 against $0.0011 on Haiku), because cutting each result to 2,000 characters left it little to send. The cards said so.
+
+Sessions with a lot of thinking read higher. Claude keeps earlier thinking in its context at full length, while Pi stores only the shorter summary of it and leaves thinking out of its compaction. On one 500k-token Opus session at xhigh thinking, taking the reported reasoning tokens out would have lowered the scaling from 1.81 to 1.63, so the estimate there reads about 10% higher on top of the usual error.
+
 ## Where the summary stops
 
 Pi keeps the newest messages as they are, and the summary has to stop where they begin. To test that, `keepRecentTokens` was set to 100 so Pi's cut falls inside a two-turn session: usually on the `cat notes.txt` call in the middle of the first turn. A run counts as a leak when the summary's Done list reports a tool call from the kept messages.

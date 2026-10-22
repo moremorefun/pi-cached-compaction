@@ -34,6 +34,8 @@ export interface CompactTrace {
 	cache?: { lifetimeSeconds?: number; source?: string; expiresInSeconds?: number };
 	request?: { thinking: string; bridgeFork: boolean; toolChoiceNone: boolean; sharedPrefix: boolean };
 	response?: { stopReason: string; seconds: number; usage: TraceUsage; summaryChars: number; error?: string };
+	/** Pi's compaction of the same messages, estimated: its uncached input tokens, and their cost with this summary's output. */
+	piEstimate?: { input: number; cost: number };
 }
 
 /** The compaction Pi saved, whichever path wrote it. */
@@ -106,7 +108,32 @@ const TRIGGER_LABELS: Record<Trigger, string> = {
 function cacheShare(usage: TraceUsage): string {
 	const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
 	const pct = prompt > 0 ? Math.floor((100 * usage.cacheRead) / prompt) : 0;
-	return `${pct}% of ${formatTokens(prompt)} from cache, ${formatTokens(usage.output)} out, $${usage.cost.toFixed(4)}`;
+	return `${pct}% of ${formatTokens(prompt)} from cache, ${formatTokens(usage.output)} out`;
+}
+
+function formatCost(cost: number): string {
+	return `$${Number(cost.toPrecision(2))}`;
+}
+
+/**
+ * A cached compaction against Pi's estimate for the same messages: by cost when the model has prices, else (the
+ * bridge's subscription models) by the tokens not read from the cache. `ratio` is this one over Pi's.
+ */
+export function comparison(record: CompactTrace): { text: string; ratio: number } | undefined {
+	const { piEstimate, response } = record;
+	if (record.outcome !== "cached" || !piEstimate || !response) return undefined;
+	const { usage } = response;
+	const priced = piEstimate.cost > 0;
+	const ratio = priced ? usage.cost / piEstimate.cost : (usage.input + usage.cacheWrite) / piEstimate.input;
+	const delta =
+		ratio <= 0.95 ? `${Math.round(100 * (1 - ratio))}% less`
+		: ratio < 1.05 ? "about the same"
+		: ratio < 2 ? `${Math.round(100 * (ratio - 1))}% more`
+		: `${ratio.toFixed(1)}× as much`;
+	const text = priced
+		? `vs Pi's compaction: ${delta}, ${formatCost(usage.cost)} instead of ~${formatCost(piEstimate.cost)} (it sends ~${formatTokens(piEstimate.input)} tokens, none from cache)`
+		: `vs Pi's compaction: ${delta}, ${formatTokens(usage.input + usage.cacheWrite)} tokens not from cache instead of ~${formatTokens(piEstimate.input)}`;
+	return { text, ratio };
 }
 
 export function formatRemaining(ms: number): string {
@@ -132,17 +159,16 @@ export function describeTrace(record: TraceRecord): string {
 			const what = TRIGGER_LABELS[record.trigger];
 			if (record.outcome === "cached" && record.response) {
 				const { usage, seconds, summaryChars } = record.response;
-				const sent = record.lastRequest?.promptTokens;
-				return `${time} ${what}: cached, ${cacheShare(usage)}${sent ? ` (last turn sent ${formatTokens(sent)})` : ""}, ${seconds.toFixed(1)}s, summary ${summaryChars} chars`;
+				return `${time} ${what}: cached, ${cacheShare(usage)}, ${seconds.toFixed(1)}s, summary ${summaryChars} chars`;
 			}
 			const then = record.outcome === "fallback" ? "Pi's compaction" : "cancelled";
 			const usage = record.response?.usage;
-			const spent = usage && usage.input + usage.cacheRead + usage.cacheWrite > 0 ? ` (the summary request used ${cacheShare(usage)})` : "";
+			const spent = usage && usage.input + usage.cacheRead + usage.cacheWrite > 0 ? ` (the summary request used ${cacheShare(usage)}, ${formatCost(usage.cost)})` : "";
 			return `${time} ${what}: ${then}, ${record.reason}${spent}`;
 		}
 		case "result":
 			return record.by === "pi"
-				? `${time}   Pi's compaction saved${record.usage ? `: ${cacheShare(record.usage)}` : ""}, summary ${record.summaryChars} chars`
+				? `${time}   Pi's compaction saved${record.usage ? `: ${cacheShare(record.usage)}, ${formatCost(record.usage.cost)}` : ""}, summary ${record.summaryChars} chars`
 				: `${time}   saved, ${formatTokens(record.tokensBefore)} tokens summarized`;
 		case "failed":
 			// Pi can fail before session_before_compact runs ("Nothing to compact"), so this line names its trigger.

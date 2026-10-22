@@ -1,11 +1,22 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { contentText, type Message } from "@earendil-works/pi-ai";
-import { buildSessionProjection, convertToLlm, sessionEntryToContextMessages, type FileOperations, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+	buildSessionProjection,
+	convertToLlm,
+	estimateTokens,
+	serializeConversation,
+	sessionEntryToContextMessages,
+	type FileOperations,
+	type SessionBeforeCompactEvent,
+	type SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 
 /** Entry types that never add model input, so they may sit between the captured request and compaction. */
 const CONTEXT_FREE_ENTRY_TYPES = new Set(["custom", "label", "session_info", "usage", "thinking_level_change"]);
 const MESSAGE_ARRAY_KEYS = ["messages", "input"] as const;
 const OUTPUT_LIMIT_KEYS = new Set(["max_tokens", "max_output_tokens", "max_completion_tokens"]);
+/** Pi's summarization system prompt and instructions around the serialized messages: about 1,200 characters in Pi 1.3. */
+const PI_PROMPT_CHARS = 1_200;
 
 export type Payload = Record<string, unknown>;
 
@@ -238,6 +249,26 @@ Use this EXACT format:
 - [Or "(none)" if not applicable]
 
 Keep each section concise. Preserve exact file paths, function names, and error messages. Reply with the summary only, and stop it right before the message that begins with the <kept-start> text.${focus}`;
+}
+
+/**
+ * The input tokens Pi's compaction would send for the same cut. It sends the summarized messages as text (tool output
+ * cut to 2,000 characters) with the previous summary, plus a second request for the turn prefix when the cut splits a
+ * turn, as compact() does. Nothing of it is read from the cache. Pi's 4 characters per token is off by up to a third
+ * either way depending on the tokenizer and the content, so the count is scaled by how the provider counted `sent`,
+ * the summary request's messages: `sentTokens` against Pi's estimate for them.
+ */
+export function piCompactionInput(
+	{ messagesToSummarize, turnPrefixMessages, isSplitTurn, previousSummary }: SessionBeforeCompactEvent["preparation"],
+	sent: AgentMessage[],
+	sentTokens: number,
+): number {
+	const requestChars = (messages: AgentMessage[]) => serializeConversation(convertToLlm(messages)).length + PI_PROMPT_CHARS;
+	const splitTurn = isSplitTurn && turnPrefixMessages.length > 0;
+	let chars = splitTurn ? requestChars(turnPrefixMessages) : 0;
+	if (!splitTurn || messagesToSummarize.length > 0) chars += requestChars(messagesToSummarize) + (previousSummary?.length ?? 0);
+	const estimated = sent.reduce((sum, message) => sum + estimateTokens(message), 0);
+	return Math.ceil((chars / 4) * (sentTokens / estimated));
 }
 
 /**

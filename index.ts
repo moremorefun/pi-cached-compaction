@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
+import { calculateCost, type Api, type AssistantMessage, type Model, type Usage } from "@earendil-works/pi-ai";
 import { convertToLlm, getLastAssistantUsage, getLatestCompactionEntry, keyHint, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { cacheState, hasExplicitPromptCache, type CacheState } from "./cache-state.ts";
@@ -9,6 +9,7 @@ import {
 	isPlainObject,
 	keptStart,
 	messageArrayKey,
+	piCompactionInput,
 	summaryInstruction,
 	summaryPayload,
 	trailingMessages,
@@ -20,6 +21,7 @@ import {
 import { autoCompactionEnabled, loadConfig } from "./config.ts";
 import {
 	appendTrace,
+	comparison,
 	describeTrace,
 	formatDuration,
 	formatRemaining,
@@ -141,6 +143,11 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			const line = describeTrace(record);
 			const missed = record.event === "failed" || (record.event === "compact" && (record.outcome !== "cached" || record.response?.usage.cacheRead === 0));
 			lines.push(missed ? theme.fg("warning", line) : line);
+			const versus = record.event === "compact" ? comparison(record) : undefined;
+			if (versus) {
+				const text = `         ${versus.text}`;
+				lines.push(versus.ratio <= 0.95 ? theme.fg("success", text) : versus.ratio >= 1.05 ? theme.fg("warning", text) : text);
+			}
 			if (expanded && record.event === "compact") lines.push(...traceDetails(record).map((detail) => theme.fg("dim", `         ${detail}`)));
 		}
 		if (expanded) lines.push(theme.fg("dim", `log: ${TRACE_PATH_LABEL}`));
@@ -369,10 +376,11 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		const requestInfo = { thinking: thinkingLevel, bridgeFork: prefix === undefined, toolChoiceNone: disableTools, sharedPrefix: false };
 		record.request = requestInfo;
 		const started = Date.now();
+		const sent = [...request.transcript, ...trailing, instruction];
 		let response: AssistantMessage;
 		try {
 			response = await ctx.modelRegistry
-				.streamSimple(request.model, { messages: convertToLlm([...request.transcript, ...trailing, instruction]) }, {
+				.streamSimple(request.model, { messages: convertToLlm(sent) }, {
 				reasoning: thinkingLevel === "off" ? undefined : thinkingLevel,
 				// Pi's own limit for a summary, so it fits the room Pi reserves for it. The output limit is not part of the cached prefix.
 				maxTokens: Math.min(Math.floor(0.8 * preparation.settings.reserveTokens), request.model.maxTokens > 0 ? request.model.maxTokens : Infinity),
@@ -421,6 +429,13 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		if (!summary) return fallBack("the model returned no summary text");
 
 		const checkpoint = checkpointSummary(summary, preparation.fileOps, getLatestCompactionEntry(event.branchEntries)?.details);
+		const { input, cacheRead, cacheWrite } = response.usage;
+		if (input + cacheRead + cacheWrite > 0) {
+			// Pi's summary of the same messages would be about as long, so its estimate reuses this summary's output.
+			const piInput = piCompactionInput(preparation, sent, input + cacheRead + cacheWrite);
+			const piUsage: Usage = { ...response.usage, input: piInput, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, cost: { ...response.usage.cost } };
+			record.piEstimate = { input: piInput, cost: calculateCost(request.model, piUsage).total };
+		}
 		decision = trace(ctx, record);
 
 		return {
@@ -453,7 +468,11 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			let log: string[];
 			try {
 				const records = readTraces(ctx.sessionManager.getSessionId(), 12);
-				log = records.length > 0 ? ["This session:", ...records.map(describeTrace)] : ["Nothing logged for this session yet."];
+				const lines = records.flatMap((record) => {
+					const versus = record.event === "compact" ? comparison(record) : undefined;
+					return versus ? [describeTrace(record), `         ${versus.text}`] : [describeTrace(record)];
+				});
+				log = records.length > 0 ? ["This session:", ...lines] : ["Nothing logged for this session yet."];
 			} catch (error) {
 				log = [`Could not read the log: ${error instanceof Error ? error.message : String(error)}`];
 			}
