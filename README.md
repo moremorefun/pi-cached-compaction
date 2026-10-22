@@ -106,7 +106,7 @@ If the first kept message has nothing to quote (only an image, or only thinking)
 While Pi is idle, the footer counts down how long the cache has left. Just before it expires, the extension compacts from the still-warm cache, so your next message rewrites a summary-sized context instead of the whole session at full price.
 
 ```
- footer while idle:  ⏱ 59m … ⏱ 2m … ⏱ 0:45 (warning color) … cache cold
+ footer while idle:  ⏱ 59m … ⏱ 2m … ⏱ 0:25 (warning color) … cache cold
 
  last reply                                                cache expires
      │                                                           │
@@ -198,13 +198,13 @@ When it couldn't prove a cache hit, the card says why and what Pi's own compacti
 
 ```
 cached compaction
-13:48:54 /compact: Pi's default, request field "reasoning" differs
+13:48:54 /compact: Pi's compaction, request field "reasoning" differs
          cache: lifetime 30 min (OpenAI's minimum), 30 min left
          last request: 4 s ago, 20 messages, 2k prompt tokens, 1 new since
          request: thinking low, shared 12h prefix
          last request had: {"effort":"high","summary":"auto"}
          summary request had: {"effort":"low","summary":"auto"}
-13:48:59   Pi's default compaction saved: 0% of 923 from cache, 384 out, $0.0003, summary 1243 chars
+13:48:59   Pi's compaction saved: 0% of 923 from cache, 384 out, $0.0003, summary 1243 chars
 log: ~/.pi/agent/cached-compaction.jsonl
 ```
 
@@ -223,7 +223,7 @@ This session:
 11:52:37 cache expires in 20s: not compacting, the context holds 2k tokens, under minContextTokens (50k)
 ```
 
-Every decision is also appended to `~/.pi/agent/cached-compaction.jsonl`, which moves to `.1` past 5 MB. Each line records what triggered the compaction, each check's result, the request settings, the provider's cache usage, and the timing. When the request didn't match, it includes up to 200 characters of each version around the first difference. The log stays on your machine.
+Every decision is also appended to `~/.pi/agent/cached-compaction.jsonl`, which moves to `.1` past 5 MB. Each line records what triggered the compaction, the path it took and why, the request settings, the provider's cache usage, and the timing. When the request didn't match, it includes up to 200 characters of each version around the first difference. The log stays on your machine.
 
 ```sh
 jq -c 'select(.event == "compact") | {at, trigger, outcome, reason, cacheRead: .response.usage.cacheRead}' ~/.pi/agent/cached-compaction.jsonl
@@ -253,16 +253,16 @@ To stop compacting before expiry:
 
 Pi's compaction sends only the messages it summarizes, and pays full price for them. This extension sends the whole session and pays the cache-read price for nearly all of it.
 
-The only part that isn't cached is the instruction (about 350 tokens) plus anything added since the last request. That part stays about the same size, so the cached share grows with the session. The tests below ran on small sessions to keep them cheap, which is where the lower numbers come from:
+The only part that isn't cached is the instruction (about 400–600 tokens, depending on the model) plus anything added since the last request. That part stays about the same size, so the cached share grows with the session. The tests below ran on small sessions to keep them cheap, which is where the lower numbers come from:
 
 ```
- summary request = everything your last turn sent  +  instruction (~350 tokens)
+ summary request = everything your last turn sent  +  instruction (~500 tokens)
                    └──── read from the cache ───┘     └─── new, full price ───┘
 
  2k test session        █████████████████▒▒▒   83%    measured
  10k session            ███████████████████▒   95%    measured
  44k session            ████████████████████   99%    measured
- auto-compaction on a   ████████████████████   99.8%  computed: 350 new tokens
+ auto-compaction on a   ████████████████████   99.7%  computed: 500 new tokens
    200k model (~184k)                                  out of ~184k
                         █ from the cache  ▒ new
 ```

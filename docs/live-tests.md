@@ -4,7 +4,7 @@ The measurements behind the README. Run on 2026-10-21 with Pi 1.3.0 in RPC mode,
 
 ## Compaction across models
 
-Unless noted, a run makes three tool-using turns (read, edit, bash), runs `/compact`, makes one more edit, and runs `/compact` again. The percentage is the share of the summary request's prompt read from the cache. In these small sessions the summary instruction, about 350 new tokens, keeps it in the 80s: the summary request read everything the previous turn had sent except its last 3 tokens.
+Unless noted, a run makes three tool-using turns (read, edit, bash), runs `/compact`, makes one more edit, and runs `/compact` again. The percentage is the share of the summary request's prompt read from the cache. In these small sessions the summary instruction keeps it in the 80s: the summary request read everything the previous turn had sent except its last 3 tokens. The instruction was about 350 tokens in these runs. Since its wording changed (see [Where the summary stops](#where-the-summary-stops)) it measures about 415 tokens on `gpt-6-luna` and 610 on `claude-haiku-5-5`.
 
 | Model | API | Two compactions |
 |---|---|---|
@@ -16,7 +16,7 @@ Unless noted, a run makes three tool-using turns (read, edit, bash), runs `/comp
 | `opencode-go/grok-4.7` | OpenAI Responses | 90%, 90% |
 | `opencode-go/kimi-k2.7-code` | OpenAI Chat Completions | 79%, 86% |
 
-`deepseek-v4.1-flash` and `muse-spark-1.3-contributor` didn't run: opencode-go rejects them until the workspace allows Global regions, or endpoints that train on request data. With every turn failing, the extension handed compaction to Pi's default, which failed the same way.
+`deepseek-v4.1-flash` and `muse-spark-1.3-contributor` didn't run: opencode-go rejects them until the workspace allows Global regions and endpoints that train on request data. With every turn failing, the extension handed compaction to Pi's, which failed the same way.
 
 Every run that used tools left the edited file correct.
 
@@ -53,9 +53,9 @@ The earlier wording quoted the first kept message and said to summarize only wha
 | Idle 12, 17, or 24 minutes, then `/compact` | 83–84% every time |
 | Idle 32 or 62 minutes, long or short retention | 0%: the cache had expired |
 | Declared 75 s lifetime, `compactBeforeExpiry` on | compacted 20 s before expiry, 83% / 84% |
-| Declared 75 s lifetime, `/compact` after 2 idle minutes | skipped (cache expired), Pi's default ran |
-| Thinking level changed before `/compact` | skipped (`request field "reasoning" differs`), Pi's default ran |
-| Model switched before `/compact` | skipped (nothing sent to this model yet), Pi's default ran |
+| Declared 75 s lifetime, `/compact` after 2 idle minutes | skipped (cache expired), Pi's compaction ran |
+| Thinking level changed before `/compact` | skipped (`request field "reasoning" differs`), Pi's compaction ran |
+| Model switched before `/compact` | skipped (nothing sent to this model yet), Pi's compaction ran |
 | An extension message arrived while idle, then `/compact` | cached, 1,510 of 1,513 from the cache |
 | `tool_choice: "none"` on the summary request | 72 fewer tokens read from the cache, every time |
 | Second session in the same project, first request (flag on) | 1,261 of 1,264 cached; none with Pi's per-session key |
