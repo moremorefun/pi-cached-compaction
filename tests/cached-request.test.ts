@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { cacheExpiresAt, keptStart, prefixMismatch, reportedCacheTier, trailingMessages, withCapturedFields, withSharedPrefixCache } from "../cached-request.ts";
+import { cacheExpiresAt, checkpointSummary, keptStart, prefixMismatch, reportedCacheTier, trailingMessages, withCapturedFields, withSharedPrefixCache } from "../cached-request.ts";
 
 const user = (text: string, timestamp: number) => ({ role: "user", content: text, timestamp }) as AgentMessage;
 const entry = (id: string, message: AgentMessage) => ({ type: "message", id, parentId: null, timestamp: "", message }) as SessionEntry;
@@ -161,4 +161,14 @@ test("GPT long retention caches the system prompt for 12 hours under the project
 	// Pi keeps the key but drops the cache options for endpoints that reject them, such as Sign in with ChatGPT.
 	const noOptions = { model: "gpt-6-luna", prompt_cache_key: "session-1", input: request.input };
 	assert.equal(withSharedPrefixCache(noOptions, "pi-project"), noOptions);
+});
+
+test("the summary ends with one set of file lists, merged with the previous compaction's, even when the model copied the old ones", () => {
+	const text = "## Goal\nEdit notes.\n\n<modified-files>\nold.txt\n</modified-files>";
+	const fileOps = { read: ["a.ts", "notes.txt"], written: [], edited: ["notes.txt"] };
+	const checkpoint = checkpointSummary(text, fileOps, { readFiles: ["b.ts"], modifiedFiles: ["old.txt"] });
+
+	assert.equal(checkpoint.summary, "## Goal\nEdit notes.\n\n<read-files>\na.ts\nb.ts\n</read-files>\n\n<modified-files>\nnotes.txt\nold.txt\n</modified-files>");
+	assert.deepEqual(checkpoint.readFiles, ["a.ts", "b.ts"]);
+	assert.deepEqual(checkpoint.modifiedFiles, ["notes.txt", "old.txt"]);
 });

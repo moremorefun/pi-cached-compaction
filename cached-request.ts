@@ -272,3 +272,30 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages. Reply with the summary only.${focus}`;
 }
+
+/**
+ * The compaction summary: the model's text followed by the read and modified file lists, merged with the lists this
+ * extension's previous compaction stored in `details` (Pi carries lists forward only from its own compactions). The
+ * model reads the previous summary in the conversation and can copy its lists, so lists in its text are replaced.
+ */
+export function checkpointSummary(
+	text: string,
+	fileOps: { read: Iterable<string>; written: Iterable<string>; edited: Iterable<string> },
+	previousDetails: unknown,
+): { summary: string; readFiles: string[]; modifiedFiles: string[] } {
+	const read = new Set(fileOps.read);
+	const modified = new Set([...fileOps.written, ...fileOps.edited]);
+	if (isPayload(previousDetails)) {
+		const { readFiles, modifiedFiles } = previousDetails;
+		if (Array.isArray(readFiles)) for (const file of readFiles) if (typeof file === "string") read.add(file);
+		if (Array.isArray(modifiedFiles)) for (const file of modifiedFiles) if (typeof file === "string") modified.add(file);
+	}
+	const readFiles = [...read].filter((file) => !modified.has(file)).sort();
+	const modifiedFiles = [...modified].sort();
+	const sections = [
+		text.replace(/<(read-files|modified-files)>[\s\S]*?<\/\1>/g, "").trim(),
+		readFiles.length > 0 ? `<read-files>\n${readFiles.join("\n")}\n</read-files>` : "",
+		modifiedFiles.length > 0 ? `<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>` : "",
+	];
+	return { summary: sections.filter(Boolean).join("\n\n"), readFiles, modifiedFiles };
+}

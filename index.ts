@@ -5,6 +5,7 @@ import { convertToLlm, getLatestCompactionEntry, keyHint, type ExtensionAPI, typ
 import { Text } from "@earendil-works/pi-tui";
 import {
 	cacheExpiresAt,
+	checkpointSummary,
 	formatRemaining,
 	formatTokens,
 	isPayload,
@@ -450,30 +451,16 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		if (response.stopReason === "toolUse") return fallBack("the model called a tool instead of writing the summary");
 		if (!summary) return fallBack("the model returned no summary text");
 
-		const read = new Set(preparation.fileOps.read);
-		const modified = new Set([...preparation.fileOps.written, ...preparation.fileOps.edited]);
-		// Pi carries file lists forward only from its own compactions, so carry this extension's lists too.
-		const previous = getLatestCompactionEntry(event.branchEntries)?.details;
-		if (isPayload(previous)) {
-			if (Array.isArray(previous.readFiles)) for (const file of previous.readFiles) if (typeof file === "string") read.add(file);
-			if (Array.isArray(previous.modifiedFiles)) for (const file of previous.modifiedFiles) if (typeof file === "string") modified.add(file);
-		}
-		const readFiles = [...read].filter((file) => !modified.has(file)).sort();
-		const modifiedFiles = [...modified].sort();
-		const fileSections = [
-			readFiles.length > 0 ? `<read-files>\n${readFiles.join("\n")}\n</read-files>` : "",
-			modifiedFiles.length > 0 ? `<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>` : "",
-		].filter(Boolean);
-
+		const checkpoint = checkpointSummary(summary, preparation.fileOps, getLatestCompactionEntry(event.branchEntries)?.details);
 		decision = trace(ctx, record);
 
 		return {
 			compaction: {
-				summary: fileSections.length > 0 ? `${summary}\n\n${fileSections.join("\n\n")}` : summary,
+				summary: checkpoint.summary,
 				firstKeptEntryId: preparation.firstKeptEntryId,
 				tokensBefore: preparation.tokensBefore,
 				usage: response.usage,
-				details: { readFiles, modifiedFiles },
+				details: { readFiles: checkpoint.readFiles, modifiedFiles: checkpoint.modifiedFiles },
 			},
 		};
 	});
