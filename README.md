@@ -5,7 +5,7 @@ Pi's compaction starts a fresh request, so it can't read the prompt cache your s
 | | Pi's compaction | pi-cached-compaction |
 |---|---|---|
 | What it sends | the old messages as text, under its own system prompt | your conversation unchanged, plus one instruction |
-| Prompt cache | not used: every token at full price | about 80–99% read from the cache, at about 0.1× the price |
+| Prompt cache | not used: every token at full price | about 99% read from the cache at normal compaction sizes ([less on tiny sessions](#what-it-costs)), at about 0.1× the price |
 | Tool output the summary sees | cut to 2,000 characters | complete |
 | Cost | full price for a trimmed copy | 42–45% less on chatty sessions, about even on tool-heavy ones, more on tiny ones ([measured](#what-it-costs)) |
 | After a long break | your next message rewrites the whole expired cache | it compacts just before the cache expires, so your next message rewrites a much smaller context |
@@ -39,7 +39,7 @@ YOUR SESSION (already cached, warm)
  │  byte-for-byte the same as your last turn            │  above"   │
  └──────────────────────────────────────────────────────┴───────────┘
                                                           ▲ tiny new tail
- cache:   ✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓·  ~95% hit at ~0.1×
+ cache:   ✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓✓·  ~99% hit at ~0.1×
  sees:    the full conversation, tools included, nothing cut
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━  RESULT (same for both)  ━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -77,7 +77,7 @@ Every compaction goes through the same checks: `/compact`, Pi's automatic compac
  rebuilt request identical to the last one, up to the new part? ──no──────┤
         │yes                                                  nothing sent│
         ▼                                                                 ▼
- send it: about 80–99% read from the cache            Pi's own compaction runs
+ send it: ~99% read from the cache                    Pi's own compaction runs
         │                                             (or, before expiry: nothing
         ▼                                              happens and the cache cools)
  a card in the chat shows the path taken, the cache share, and the cost
@@ -85,7 +85,7 @@ Every compaction goes through the same checks: `/compact`, Pi's automatic compac
 
 The comparison runs on the exact request Pi would send, using Pi's own serializer. Anything that would change the cached part means nothing is sent: on most models a different thinking level, and also an edited message or a field another extension changed.
 
-Pi keeps the most recent messages word for word after the summary, so the summary has to stop where they begin. The instruction quotes the first kept message as the model sees it, and if that text repeats, it also says which repeat it is:
+Pi keeps about the last 20k tokens of messages (its `keepRecentTokens` setting) word for word after the summary. The extension uses Pi's own cut point, so the summary has to stop where those messages begin. The instruction quotes the first kept message as the model sees it, and if that text repeats, it also says which repeat it is:
 
 ```
  sent to the model (cached)                                        new
@@ -96,6 +96,8 @@ Pi keeps the most recent messages word for word after the summary, so the summar
  │                              │                             │  with: <msg K>"    │
  └──────────────────────────────┴─────────────────────────────┴────────────────────┘
 ```
+
+The model still reads the kept messages, since they're part of the cached prefix. In the live tests the summaries stopped at the quoted message and didn't repeat what came after it.
 
 If the first kept message has nothing to quote (only an image, or only thinking), it doesn't guess: Pi's own compaction runs.
 
@@ -183,7 +185,7 @@ Pi's own cache warmer only runs for models with a declared lifetime. If you want
 
 ## What you'll see
 
-After each compaction, a card appears below the summary. It's shown to you only and never sent to the model, and it stays in the session after a resume:
+After each compaction, a card appears below the summary. It's shown to you only and never sent to the model, and it stays in the session after a resume. These examples come from a 2k-token test session, which is why they show 83%:
 
 ```
 cached compaction  (ctrl+o for details)
@@ -248,7 +250,25 @@ To stop compacting before expiry:
 
 ## What it costs
 
-Pi's compaction sends only the messages it summarizes, and pays full price for them. This extension sends the whole session and pays the cache-read price for nearly all of it. Which costs less depends on what the session holds. Measured with GPT through opencode-go, at the prices in Pi's model catalog:
+Pi's compaction sends only the messages it summarizes, and pays full price for them. This extension sends the whole session and pays the cache-read price for nearly all of it.
+
+The only part that isn't cached is the instruction (about 350 tokens) plus anything added since the last request. That part stays about the same size, so the cached share grows with the session. The tests below ran on small sessions to keep them cheap, which is where the lower numbers come from:
+
+```
+ summary request = everything your last turn sent  +  instruction (~350 tokens)
+                   └──── read from the cache ───┘     └─── new, full price ───┘
+
+ 2k test session        █████████████████▒▒▒   83%    measured
+ 10k session            ███████████████████▒   95%    measured
+ 44k session            ████████████████████   99%    measured
+ auto-compaction on a   ████████████████████   99.8%  computed: 350 new tokens
+   200k model (~184k)                                  out of ~184k
+                        █ from the cache  ▒ new
+```
+
+Auto-compaction can also fire in the middle of a run. Then the latest tool results are new too, but at that size they're still a small share.
+
+Which costs less depends on what the session holds. Measured with GPT through opencode-go, at the prices in Pi's model catalog:
 
 | Session at compaction | Pi's compaction | pi-cached-compaction |
 |---|---|---|
