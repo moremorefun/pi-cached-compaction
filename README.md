@@ -16,7 +16,7 @@ Pi compaction that reads the prompt cache your session already built. On big ses
 
 A real card from a 667k-token Opus 5.5 session, a subagent implementing a GitHub issue over 393 responses, replayed through pi-claude-bridge. Claude Code bills by subscription, so the bridge's own card compares tokens; the dollars here are the same token counts at Anthropic's API prices for Opus 5.5. Two things the card doesn't show:
 
-- **The summary saw all the tool output.** Pi's compaction would have cut 109 of the session's 521 tool results to 2,000 characters, which drops 61% of the tool output before the model reads it.
+- **The summary saw all the tool output.** Pi's compaction would have cut 109 of the session's 521 tool results to 2,000 characters, which drops 61% of the tool output before the model reads it. That output was already in the cache, so reading all of it is part of the $0.19.
 - **The footer counts down to the expensive part.** At this size, letting the cache expire means your next message rewrites all 667k tokens, $5.33 at the 1-hour rate. If Pi is idle, the extension compacts 20 seconds before that.
 
 ## Why this exists
@@ -37,7 +37,7 @@ The provider reads nearly all of it from the cache at about a tenth of the input
 ## vs Pi's compaction
 
 - **Reads the cache.** About 99% of the summary request comes from the cache at normal compaction sizes.
-- **Sees all the tool output.** Pi's compaction shows the model the first 2,000 characters of each tool result. This one shows all of it.
+- **Sees all the tool output, at the cache price.** Pi's compaction shows the model the first 2,000 characters of each tool result, and the detail a summary needs, like an error message, a failing test, or a value deep in a file, is often past that. This one shows all of it. That output is already in the cache, so it costs no more to include than the rest of the session.
 - **Compares itself with Pi's.** Each compaction gets a card showing its cost next to what Pi's compaction would have cost for the same messages.
 - **Compacts before the cache expires.** If you step away, it compacts from the warm cache, so your next message doesn't pay to write the whole session again.
 - **Falls back cleanly.** It checks that the request repeats your last one byte for byte up to the new part. When it can't prove that, Pi's own compaction runs as usual. (Claude through pi-claude-bridge is checked by the bridge instead; see [Providers](#providers).)
@@ -46,7 +46,7 @@ The provider reads nearly all of it from the cache at about a tenth of the input
 |---|---|---|
 | What it sends | the older messages as text, under its own system prompt | your conversation as it is, plus one instruction |
 | Prompt cache | not used | about 99% read from it at normal compaction sizes |
-| Tool output the summary sees | the first 2,000 characters of each result | all of it |
+| Tool output the summary sees | the first 2,000 characters of each result | all of it, read from the cache |
 | Cost | full price, for the older messages only | 0.1× for the whole session: less once there's a lot to summarize, more on small sessions ([numbers](#what-it-costs)) |
 | After a long break | your next message rewrites the whole expired cache | it compacts just before the cache expires, so there's much less to rewrite |
 | Cache lifetime | Pi's default (5 minutes on Anthropic) | 1 hour in interactive sessions, which Anthropic bills at 2× per write instead of 1.25× ([why](#compacting-before-the-cache-expires)) |
@@ -236,7 +236,7 @@ So the instruction quotes the first kept message as the model sees it (and says 
 ## Limitations
 
 - Without a known cache lifetime, the extension can't tell a cold cache from a warm one. A compaction after a long break then pays to rewrite the whole session. Declare a lifetime with Pi's `modelOverrides.promptCache`, or, for GPT on opencode-go, run `/cached-compaction cache-flag`.
-- Through pi-claude-bridge the extension can't check the request. If the bridge can't copy the whole Claude Code conversation, the summary is still correct but reads less from the cache, and the card shows the low cache share.
+- Through pi-claude-bridge the extension can't check the request. If the bridge can't copy the whole Claude Code conversation, the summary is still correct but reads less from the cache, and the card shows the low cache share. Right now that happens to an auto-compaction that fires in the middle of a run: it reads only the system prompt from the cache. `/compact` and compacting before expiry happen between runs and read 85–99%.
 - Fields that extensions loaded before this one add to provider requests are copied into the summary request, such as codex-fast's `service_tier`. Changes from extensions loaded after it aren't seen, so the request can miss the cache. The summary is still correct, it just costs about what Pi's compaction would, and the card shows the low cache share.
 - When a later compaction falls back to Pi's own, its read and modified file lists start over. Pi doesn't carry the lists forward from an extension's compaction.
 - Right after a compaction, the card is the session's last entry. A second `/compact` then says "Nothing to compact (session too small)" instead of "Already compacted". Both mean there's nothing new to compact.

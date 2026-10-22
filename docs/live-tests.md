@@ -127,6 +127,19 @@ For comparison I also built an 895k-token session out of nothing but whole-file 
 
 That run also showed Claude Code's own limit: it keeps a tool result over about 50 KB as a file and puts a 2 KB preview in the conversation. Through the bridge, the summary sees what the live model saw, previews included.
 
+## Rechecked on the current bridge
+
+Rerun on pi-claude-bridge `c459fde` and Claude Code 2.1.308, `pi-claude/claude-opus-5-5` at thinking high, in a separate agent directory:
+
+| Test | Bridge | Read from cache |
+|---|---|---|
+| One read of a 108 KB file, two short turns, then `/compact` | copied 9/9 messages | 4,236 of 4,971 (85%) |
+| Auto-compaction mid-run (threshold at about 40k, files read one per response), first | nothing to copy yet, imported all 8 messages | 1,960 of 45,695 (4%) |
+| The same run's second auto-compaction | copied 4 of 10, imported the run's 6 | 1,960 of 50,155 (4%) |
+
+- Claude Code still keeps the 108 KB read as a file with a 2 KB preview, so that's what the summary sees.
+- A compaction in the middle of a run reads only the system prompt and tools (1,960 tokens), even for the messages the bridge copied. My two real auto-compactions that day (507k and 529k) were both mid-run and read 3,117. Filed as pi-claude-bridge#33.
+
 ## Not yet tested live
 
 - The `openai` provider (no API credits). GPT-6 models there carry the reasoning effort as a trailing `configuration_update` item after the cache breakpoint, which the prefix check treats like Anthropic's trailing effort message. That path is checked against Pi's own OpenAI serializer for `gpt-6.1-sol` and `gpt-5.5`.
