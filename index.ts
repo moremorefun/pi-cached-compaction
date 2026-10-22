@@ -381,11 +381,11 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 					? {
 						onPayload: (params: unknown) => {
 							const built = summaryPayload(params, prefix, sharedKey, cacheNeutral);
+							requestInfo.sharedPrefix = built.sharedPrefix;
 							if ("reason" in built) {
 								mismatch = built;
 								throw new Error(PREFIX_MISMATCH);
 							}
-							requestInfo.sharedPrefix = built.sharedPrefix;
 							return built.payload;
 						},
 					}

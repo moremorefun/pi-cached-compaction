@@ -35,13 +35,13 @@ test("a changed message or request field is reported with the text around the ch
 	const prefix = { payload: { model: "m", messages: [{ role: "user", content: "hi" }] }, key: "messages" };
 	assert.deepEqual(
 		summaryPayload({ model: "m", messages: [{ role: "user", content: "edited" }, { role: "user", content: "x" }] }, prefix, undefined, none),
-		{ reason: "message 0 differs", captured: '{"role":"user","content":"hi"}', rebuilt: '{"role":"user","content":"edited"}' },
+		{ reason: "message 0 differs", captured: '{"role":"user","content":"hi"}', rebuilt: '{"role":"user","content":"edited"}', sharedPrefix: false },
 	);
 	assert.deepEqual(
 		summaryPayload({ model: "other", messages: [...prefix.payload.messages, { role: "user", content: "x" }] }, prefix, undefined, none),
-		{ reason: 'request field "model" differs', captured: '"m"', rebuilt: '"other"' },
+		{ reason: 'request field "model" differs', captured: '"m"', rebuilt: '"other"', sharedPrefix: false },
 	);
-	assert.deepEqual(summaryPayload("not a payload", prefix, undefined, none), { reason: "the provider payload is not an object" });
+	assert.deepEqual(summaryPayload("not a payload", prefix, undefined, none), { reason: "the provider payload is not an object", sharedPrefix: false });
 });
 
 test("trailing messages are the branch entries after the captured transcript", () => {
@@ -89,6 +89,9 @@ test("a GPT summary request gets the project's 12-hour prefix before it is compa
 		sharedPrefix: true,
 	});
 	assert.equal(reason(summaryPayload(rebuilt, prefix, undefined, none)), 'request field "prompt_cache_key" differs');
+	// The card shows the shared prefix on a request that was not sent too, so a mismatch it caused can be told apart.
+	const edited = { ...rebuilt, input: [{ role: "developer", content: "You are Pi, edited." }, turn, summarize] };
+	assert.equal(summaryPayload(edited, prefix, "pi-project", none).sharedPrefix, true);
 });
 
 test("the kept start is the first kept message the request carries, with tool calls quoted and repeats counted from the end", () => {

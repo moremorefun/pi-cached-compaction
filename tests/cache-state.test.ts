@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { cacheState } from "../cache-state.ts";
@@ -36,7 +35,9 @@ test("the lifetime is the tier the latest write reported, the model's figure for
 	assert.deepEqual(lifetime(claude, [long]), { ms: 3_600_000, source: "reported by the provider" });
 	assert.deepEqual(lifetime(claude, [long, reply("b", 2, { cacheWrite: 40, cacheWrite1h: 0 })]), { ms: 300_000, source: "reported by the provider" });
 	assert.deepEqual(lifetime(claude, [long, reply("b", 2, { cacheRead: 500 })]), { ms: 3_600_000, source: "reported by the provider" }, "a turn that only read keeps the tier");
-	assert.equal(lifetime(claude, [reply("a", 1, { cacheWrite: 500 })]), undefined, "a provider that does not report the tier gives no lifetime");
+	// Without a lifetime the state still says the request cached, but gives no expiry.
+	assert.deepEqual(cacheState(claude, [reply("a", 1, { cacheWrite: 500 })]), { lifetime: undefined, cached: true, expiresAt: undefined, replied: true });
+	assert.deepEqual(lifetime(claude, [reply("a", 1, { cacheWrite: 500, cacheWrite1h: 500 }, "error")]), { ms: 3_600_000, source: "reported by the provider" }, "a failed turn still reports the tier it wrote");
 	assert.equal(lifetime(claude, [long, compaction]), undefined);
 	const declared = { ...claude, promptCache: { short: 60, long: 7200 } } as Model<Api>;
 	assert.deepEqual(lifetime(declared, [long]), { ms: 7_200_000, source: "declared by the model" });

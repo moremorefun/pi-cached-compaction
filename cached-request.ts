@@ -127,20 +127,23 @@ export function withSharedPrefixCache(payload: Payload, cacheKey: string): Paylo
  * The summary request's payload, built from Pi's `params` the way the agent's request was: with the shared prefix
  * key when `sharedKey` is set, and with the top-level fields only the captured request has, which extensions earlier
  * in the before_provider_request chain add (codex-fast adds service_tier) and the summary request skips. Returned only
- * when it extends the captured request's cache entry; otherwise, where it stops matching. `cacheNeutral` names
- * top-level fields the provider keeps out of the cached prefix.
+ * when it extends the captured request's cache entry; otherwise, where it stops matching. Either way `sharedPrefix`
+ * says whether the shared prefix key was applied. `cacheNeutral` names top-level fields the provider keeps out of the
+ * cached prefix.
  */
 export function summaryPayload(
 	params: unknown,
 	prefix: CachedPrefix,
 	sharedKey: string | undefined,
 	cacheNeutral: ReadonlySet<string>,
-): { payload: Payload; sharedPrefix: boolean } | PrefixMismatch {
-	if (!isPlainObject(params)) return { reason: "the provider payload is not an object" };
+): { sharedPrefix: boolean } & ({ payload: Payload } | PrefixMismatch) {
+	if (!isPlainObject(params)) return { reason: "the provider payload is not an object", sharedPrefix: false };
 	const shared = sharedKey ? withSharedPrefixCache(params, sharedKey) : params;
+	const sharedPrefix = shared !== params;
 	const missing = Object.keys(prefix.payload).filter((field) => !(field in shared));
 	const payload = { ...shared, ...Object.fromEntries(missing.map((field) => [field, prefix.payload[field]])) };
-	return prefixMismatch(prefix.payload, payload, prefix.key, cacheNeutral) ?? { payload, sharedPrefix: shared !== params };
+	const mismatch = prefixMismatch(prefix.payload, payload, prefix.key, cacheNeutral);
+	return mismatch ? { ...mismatch, sharedPrefix } : { payload, sharedPrefix };
 }
 
 /** First words of a message as the model reads it, so the summary prompt can point at where the kept context starts. */
