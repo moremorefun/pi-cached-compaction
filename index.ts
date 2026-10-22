@@ -1,22 +1,20 @@
 import { createHash } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import { convertToLlm, getLatestCompactionEntry, keyHint, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
+import { convertToLlm, getLastAssistantUsage, getLatestCompactionEntry, keyHint, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { cacheState, hasExplicitPromptCache, type CacheState } from "./cache-state.ts";
 import {
-	cacheExpiresAt,
 	checkpointSummary,
-	formatRemaining,
-	formatTokens,
-	isPayload,
+	isPlainObject,
 	keptStart,
 	messageArrayKey,
-	prefixMismatch,
-	reportedCacheTier,
 	summaryInstruction,
+	summaryPayload,
 	trailingMessages,
-	withCapturedFields,
 	withSharedPrefixCache,
+	type CachedPrefix,
+	type Payload,
 	type PrefixMismatch,
 } from "./cached-request.ts";
 import { autoCompactionEnabled, loadConfig } from "./config.ts";
@@ -24,8 +22,9 @@ import {
 	appendTrace,
 	describeTrace,
 	formatDuration,
+	formatRemaining,
+	formatTokens,
 	readTraces,
-	TRACE_PATH,
 	TRACE_PATH_LABEL,
 	traceDetails,
 	type CompactTrace,
@@ -38,18 +37,18 @@ import {
 interface CapturedRequest {
 	transcript: AgentMessage[];
 	/** The provider payload, compared before sending. Absent for the Claude bridge, which builds no payload Pi sees and checks the prefix itself. */
-	payload?: Record<string, unknown>;
+	payload?: Payload;
 	model: Model<Api>;
 	at: number;
 }
 
-/** A compaction that can take the cached path: the request to extend, and what the branch added since. */
+/** A compaction that can take the cached path: the request to extend, what the branch added since, and its cache. */
 interface CachedPath {
 	request: CapturedRequest;
-	key?: string;
+	/** What the summary request must extend, checked before it is sent. Undefined for the Claude bridge, which forks instead. */
+	prefix?: CachedPrefix;
 	trailing: AgentMessage[];
-	lifetime?: { ms: number; source: string };
-	expiresAt?: number;
+	cache: CacheState;
 }
 
 const STATUS_KEY = "cached-compaction";
@@ -60,13 +59,6 @@ const PREFIX_MISMATCH = "pi-cached-compaction: request prefix differs from the c
 const BRIDGE_API = "claude-bridge";
 /** The bridge's documented header for running one request on a copy of the live Claude Code conversation. */
 const FORK_REQUEST_HEADER = "x-claude-bridge-fork";
-/** Anthropic's cache lifetimes, for a provider that reports the tier it wrote but declares no lifetime (the Claude bridge). */
-const REPORTED_TIER_SECONDS = { short: 300, long: 3600 } as const;
-/**
- * OpenAI's guaranteed minimum cache lifetime on GPT-5.6 and later. Pi requests it for both retention
- * settings (it never sends the 12-hour tier). Earlier GPT models only state a typical lifetime.
- */
-const OPENAI_MIN_TTL_SECONDS = 1800;
 
 /**
  * OpenAI's own Responses API. There, tool_choice is not part of the cached prefix, and OpenAI
@@ -75,11 +67,6 @@ const OPENAI_MIN_TTL_SECONDS = 1800;
  */
 function isOpenAiResponses(model: Model<Api>): boolean {
 	return model.provider === "openai" && model.api === "openai-responses";
-}
-
-/** GPT-5.6 and later: Pi sends them prompt_cache_options, and OpenAI keeps their cache at least 30 minutes. */
-function hasExplicitPromptCache(model: Model<Api>): boolean {
-	return model.api === "openai-responses" && (model.compat as { supportsExplicitPromptCacheMode?: boolean } | undefined)?.supportsExplicitPromptCacheMode === true;
 }
 
 /**
@@ -99,21 +86,7 @@ const RETENTION_MARKER = "PI_CACHED_COMPACTION_RETENTION";
 /** Set once an interactive session in this process chose long retention. In-process headless children share the environment. */
 const INTERACTIVE_OWNER = Symbol.for("pi-cached-compaction.interactive-long-retention");
 
-/**
- * Cache lifetime of the branch's conversation: the tier its latest cache write reported, else the
- * tier PI_CACHE_RETENTION asks providers for. Undefined when neither the model nor the report gives a lifetime.
- */
-function cacheLifetime(model: Model<Api>, entries: SessionEntry[]): { ms: number; source: string } | undefined {
-	const reported = reportedCacheTier(entries);
-	const tier = reported ?? (process.env.PI_CACHE_RETENTION === "long" ? "long" : "short");
-	const declared = model.promptCache?.[tier];
-	if (declared !== undefined) return { ms: declared * 1000, source: "declared by the model" };
-	if (reported) return { ms: REPORTED_TIER_SECONDS[reported] * 1000, source: "reported by the provider" };
-	if (hasExplicitPromptCache(model)) return { ms: OPENAI_MIN_TTL_SECONDS * 1000, source: "OpenAI's minimum" };
-	return undefined;
-}
-
-function traceUsage(usage: { input: number; cacheRead: number; cacheWrite: number; output: number; cost: { total: number } }): TraceUsage {
+function traceUsage(usage: Usage): TraceUsage {
 	return { input: usage.input, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, output: usage.output, cost: usage.cost.total };
 }
 
@@ -154,7 +127,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			appendTrace(record);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			if (ctx.hasUI && message !== traceError) ctx.ui.notify(`pi-cached-compaction could not write ${TRACE_PATH}: ${message}`, "warning");
+			if (ctx.hasUI && message !== traceError) ctx.ui.notify(`pi-cached-compaction could not write ${TRACE_PATH_LABEL}: ${message}`, "warning");
 			traceError = message;
 		}
 		return record;
@@ -176,7 +149,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 	const showCard = (records: TraceRecord[]) => pi.appendEntry<{ records: TraceRecord[] }>(CARD_TYPE, { records });
 
 	const stopTimer = (ctx: ExtensionContext) => {
-		if (ticker) clearInterval(ticker);
+		clearInterval(ticker);
 		ticker = undefined;
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 	};
@@ -211,7 +184,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		// The provider reads the cache when the request starts; counting down past that point would mislead.
 		stopTimer(ctx);
 		if (ctx.hasUI) {
-			ctx.ui.notify(`Prompt cache expires in ${secondsLeft}s with ${formatTokens(contextTokens)} tokens of context. Compacting while it is still warm.`, "info");
+			ctx.ui.notify(`Prompt cache expires in ${secondsLeft}s with ${formatTokens(contextTokens)} tokens of context. Compacting now, while the cache is warm.`, "info");
 		}
 		ctx.compact({
 			onComplete: () => {
@@ -227,19 +200,17 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 
 	const startTimer = (ctx: ExtensionContext, compactAtExpiry = true) => {
 		stopTimer(ctx);
-		const ttlMs = ctx.model ? cacheLifetime(ctx.model, ctx.sessionManager.getBranch())?.ms : undefined;
-		if (ttlMs === undefined) return;
-		let expiresAt = cacheExpiresAt(ctx.sessionManager.getBranch(), ttlMs);
-		if (expiresAt === undefined) return;
+		const readExpiry = () => (ctx.model ? cacheState(ctx.model, ctx.sessionManager.getBranch()).expiresAt : undefined);
+		const firstExpiry = readExpiry();
+		if (firstExpiry === undefined) return;
+		let expiresAt = firstExpiry;
 		let shown: string | undefined;
 		let ticks = 0;
 		let attempted = !compactAtExpiry;
 		const tick = () => {
 			// Pi's idle cache warmer can push expiry out; re-read it periodically and before acting on it.
-			if (++ticks % 15 === 0 || (expiresAt as number) - Date.now() <= EXPIRY_LEAD_MS) {
-				expiresAt = cacheExpiresAt(ctx.sessionManager.getBranch(), ttlMs) ?? expiresAt;
-			}
-			const remaining = (expiresAt as number) - Date.now();
+			if (++ticks % 15 === 0 || expiresAt - Date.now() <= EXPIRY_LEAD_MS) expiresAt = readExpiry() ?? expiresAt;
+			const remaining = expiresAt - Date.now();
 			const text = formatRemaining(remaining);
 			if (ctx.hasUI && text !== shown) {
 				shown = text;
@@ -254,7 +225,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			}
 		};
 		ticker = setInterval(tick, 1000);
-		ticker.unref?.();
+		ticker.unref();
 		tick();
 	};
 
@@ -266,7 +237,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 	pi.on("before_provider_request", (event, ctx) => {
 		const transcript = pendingTranscript;
 		pendingTranscript = undefined;
-		if (!ctx.model || !isPayload(event.payload)) return;
+		if (!ctx.model || !isPlainObject(event.payload)) return;
 		// Cache-warming replays pass through here too, so they keep the same breakpoints and key.
 		const sharedKey = sharedPrefixKey(ctx.model, ctx.cwd);
 		const payload = sharedKey ? withSharedPrefixCache(event.payload, sharedKey) : event.payload;
@@ -323,19 +294,21 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 	/** Whether a compaction now could take the cached path, short of the prefix check that runs when it does. */
 	const checkCachedPath = (entries: SessionEntry[], model: Model<Api> | undefined): CachedPath | { reason: string } => {
 		const request = captured;
-		if (!request) return { reason: "no request since the session started, compacted, or switched model or branch" };
+		if (!request) return { reason: "no request since the session started or compacted, or since the model or branch changed" };
 		if (model?.provider !== request.model.provider || model.id !== request.model.id) return { reason: "the model changed since the last request" };
-		const key = request.payload ? messageArrayKey(request.payload) : undefined;
-		if (request.payload && !key) return { reason: `${request.model.api} requests are not supported` };
+		let prefix: CachedPrefix | undefined;
+		if (request.payload) {
+			const key = messageArrayKey(request.payload);
+			if (!key) return { reason: `${request.model.api} requests are not supported` };
+			prefix = { payload: request.payload, key };
+		}
 		const trailing = trailingMessages(entries, request.transcript);
 		if ("reason" in trailing) return { reason: `the conversation changed since the last request: ${trailing.reason}` };
-		// A cold cache makes the full prompt cost more than Pi's default, which sends only the summarized messages.
-		const lifetime = cacheLifetime(request.model, entries);
-		// Without a known lifetime this still shows whether the last request used the cache at all.
-		const expiresAt = cacheExpiresAt(entries, lifetime?.ms ?? 0);
-		if (expiresAt === undefined) return { reason: "the last request did not use the prompt cache" };
-		if (lifetime && Date.now() >= expiresAt) return { reason: "the prompt cache has expired" };
-		return { request, key, trailing: trailing.messages, lifetime, expiresAt: lifetime ? expiresAt : undefined };
+		// A cold cache makes the full prompt cost more than Pi's compaction, which sends only the summarized messages.
+		const cache = cacheState(request.model, entries);
+		if (!cache.cached) return { reason: "the last request did not use the prompt cache" };
+		if (cache.expiresAt !== undefined && Date.now() >= cache.expiresAt) return { reason: "the prompt cache has expired" };
+		return { request, prefix, trailing: trailing.messages, cache };
 	};
 
 	pi.on("session_before_compact", async (event, ctx) => {
@@ -361,9 +334,8 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		if (event.reason === "overflow") return fallBack("the last request overflowed the context window");
 		const check = checkCachedPath(event.branchEntries, ctx.model);
 		if ("reason" in check) return fallBack(check.reason);
-		const { request, key, trailing, lifetime, expiresAt } = check;
-		const lastReply = event.branchEntries.findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
-		const lastUsage = lastReply?.type === "message" && lastReply.message.role === "assistant" ? lastReply.message.usage : undefined;
+		const { request, prefix, trailing, cache } = check;
+		const lastUsage = getLastAssistantUsage(event.branchEntries);
 		record.lastRequest = {
 			secondsAgo: Math.round((Date.now() - request.at) / 1000),
 			messages: request.transcript.length,
@@ -371,9 +343,9 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 			newMessages: trailing.length,
 		};
 		record.cache = {
-			lifetimeSeconds: lifetime && lifetime.ms / 1000,
-			source: lifetime?.source,
-			expiresInSeconds: expiresAt === undefined ? undefined : Math.round((expiresAt - Date.now()) / 1000),
+			lifetimeSeconds: cache.lifetime && cache.lifetime.ms / 1000,
+			source: cache.lifetime?.source,
+			expiresInSeconds: cache.expiresAt === undefined ? undefined : Math.round((cache.expiresAt - Date.now()) / 1000),
 		};
 
 		// The summary must stop where the kept messages start; without text to point at, it would cover them too.
@@ -390,12 +362,11 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		// payload to compare: the header makes it copy the live Claude Code conversation instead.
 		let mismatch: PrefixMismatch | undefined;
 		const thinkingLevel = pi.getThinkingLevel();
-		const payload = request.payload;
 		const controller = new AbortController();
-		const disableTools = payload !== undefined && isOpenAiResponses(request.model);
+		const disableTools = prefix !== undefined && isOpenAiResponses(request.model);
 		const cacheNeutral = new Set(disableTools ? ["tool_choice"] : []);
-		const sharedKey = payload ? sharedPrefixKey(request.model, ctx.cwd) : undefined;
-		const requestInfo = { thinking: thinkingLevel, bridgeFork: payload === undefined, toolChoiceNone: disableTools, sharedPrefix: false };
+		const sharedKey = prefix ? sharedPrefixKey(request.model, ctx.cwd) : undefined;
+		const requestInfo = { thinking: thinkingLevel, bridgeFork: prefix === undefined, toolChoiceNone: disableTools, sharedPrefix: false };
 		record.request = requestInfo;
 		const started = Date.now();
 		let response: AssistantMessage;
@@ -406,20 +377,16 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 				sessionId: ctx.sessionManager.getSessionId(),
 				signal: AbortSignal.any([event.signal, controller.signal]),
 				...(disableTools ? { toolChoice: "none" as const } : {}),
-				...(payload && key
+				...(prefix
 					? {
 						onPayload: (params: unknown) => {
-							if (!isPayload(params)) {
-								mismatch = { reason: "the provider payload is not an object" };
+							const built = summaryPayload(params, prefix, sharedKey, cacheNeutral);
+							if ("reason" in built) {
+								mismatch = built;
 								throw new Error(PREFIX_MISMATCH);
 							}
-							const shared = sharedKey ? withSharedPrefixCache(params, sharedKey) : params;
-							// Pi leaves out the cache options the shared prefix needs on some endpoints (Sign in with ChatGPT).
-							requestInfo.sharedPrefix = shared !== params;
-							const sent = withCapturedFields(payload, shared);
-							mismatch = prefixMismatch(payload, sent, key, cacheNeutral);
-							if (mismatch) throw new Error(PREFIX_MISMATCH);
-							return sent;
+							requestInfo.sharedPrefix = built.sharedPrefix;
+							return built.payload;
 						},
 					}
 					// "none" marks a one-shot, which a bridge without fork requests runs apart from the session.
@@ -428,7 +395,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 				.result();
 		} catch (error) {
 			// Pi would run its default after a throwing handler anyway; this way the log says why.
-			return fallBack(`the summary request threw: ${error instanceof Error ? error.message : String(error)}`);
+			return fallBack(`the summary request failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		// A bridge query that called a tool waits for its result; aborting ends it.
 		if (response.stopReason === "toolUse") controller.abort();
@@ -470,19 +437,16 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			const entries = ctx.sessionManager.getBranch();
 			const model = ctx.model;
-			const lifetime = model ? cacheLifetime(model, entries) : undefined;
-			const expiresAt = lifetime ? cacheExpiresAt(entries, lifetime.ms) : undefined;
-			const replied = entries
-				.slice(entries.findLastIndex((entry) => entry.type === "compaction") + 1)
-				.some((entry) => entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason !== "error" && entry.message.stopReason !== "aborted");
-			const cache = !lifetime
-				? "lifetime unknown, so no countdown"
-				: expiresAt === undefined
-					? `${replied ? "the last request used no cache" : "no request since the session started or compacted"} (lifetime ${formatDuration(lifetime.ms)}, ${lifetime.source})`
-					: `${expiresAt > Date.now() ? `${formatRemaining(expiresAt - Date.now())} left` : "expired"} (lifetime ${formatDuration(lifetime.ms)}, ${lifetime.source})`;
+			const state = model && cacheState(model, entries);
+			let cache = "lifetime unknown, so no countdown";
+			if (state?.lifetime) {
+				let left = state.replied ? "the last request used no cache" : "no request since the session started or compacted";
+				if (state.expiresAt !== undefined) left = state.expiresAt > Date.now() ? `${formatRemaining(state.expiresAt - Date.now())} left` : "expired";
+				cache = `${left} (lifetime ${formatDuration(state.lifetime.ms)}, ${state.lifetime.source})`;
+			}
 			const check = checkCachedPath(entries, model);
 			const next = "reason" in check
-				? `Pi's default, because ${check.reason}`
+				? `Pi's compaction, because ${check.reason}`
 				: `cached path; last request ${formatDuration(Date.now() - check.request.at)} ago with ${check.request.transcript.length} messages, ${check.trailing.length} since. The request prefix is checked when it runs.`;
 			let log: string[];
 			try {

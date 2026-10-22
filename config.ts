@@ -5,7 +5,8 @@ import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 export interface CachedCompactionConfig {
 	/**
 	 * "long" asks providers for their longer cache lifetime in interactive sessions: 1 hour on Anthropic, 24 hours on
-	 * OpenAI models before GPT-5.6. GPT-5.6 and later keep their 30-minute minimum. Claude Code picks its own on pi-claude.
+	 * OpenAI models before GPT-5.6. GPT-5.6 and later keep their 30-minute conversation cache and get a 12-hour system
+	 * prompt cache shared by the project's sessions. Claude Code picks its own on pi-claude.
 	 */
 	cacheRetention: "short" | "long";
 	compactBeforeExpiry: boolean;

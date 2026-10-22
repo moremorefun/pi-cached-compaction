@@ -1,15 +1,21 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Message } from "@earendil-works/pi-ai";
-import { buildSessionProjection, convertToLlm, sessionEntryToContextMessages, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { contentText, type Message } from "@earendil-works/pi-ai";
+import { buildSessionProjection, convertToLlm, sessionEntryToContextMessages, type FileOperations, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
 /** Entry types that never add model input, so they may sit between the captured request and compaction. */
 const CONTEXT_FREE_ENTRY_TYPES = new Set(["custom", "label", "session_info", "usage", "thinking_level_change"]);
 const MESSAGE_ARRAY_KEYS = ["messages", "input"] as const;
 const OUTPUT_LIMIT_KEYS = new Set(["max_tokens", "max_output_tokens", "max_completion_tokens"]);
 
-type Payload = Record<string, unknown>;
+export type Payload = Record<string, unknown>;
 
-export function isPayload(value: unknown): value is Payload {
+/** The captured provider payload whose cache entry a summary request extends, and the field that holds its messages. */
+export interface CachedPrefix {
+	payload: Payload;
+	key: string;
+}
+
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -56,56 +62,6 @@ export function trailingMessages(entries: SessionEntry[], transcript: AgentMessa
 	return { messages };
 }
 
-/**
- * When the prompt cache written by the branch's latest request expires, or undefined when no
- * request since the last compaction used the cache. Pi's cache warmer records each refresh as a usage entry.
- */
-export function cacheExpiresAt(entries: SessionEntry[], ttlMs: number): number | undefined {
-	let refreshedAt: number | undefined;
-	for (const entry of entries) {
-		if (entry.type === "compaction") {
-			refreshedAt = undefined;
-		} else if (entry.type === "message" && entry.message.role === "assistant") {
-			// A failed request may never have reached the cache, so it neither refreshes nor clears it.
-			if (entry.message.stopReason === "error" || entry.message.stopReason === "aborted") continue;
-			const { cacheRead, cacheWrite } = entry.message.usage;
-			refreshedAt = cacheRead + cacheWrite > 0 ? entry.message.timestamp : undefined;
-		} else if (entry.type === "usage" && entry.kind === "cache_warm" && refreshedAt !== undefined) {
-			refreshedAt = Math.max(refreshedAt, Date.parse(entry.timestamp));
-		}
-	}
-	return refreshedAt === undefined ? undefined : refreshedAt + ttlMs;
-}
-
-/**
- * The cache tier the branch's latest cache write used, as the provider reported it: Pi's
- * Anthropic provider and the Claude bridge give the 1-hour share of a write as `cacheWrite1h`.
- * Undefined when no write since the last compaction reports it.
- */
-export function reportedCacheTier(entries: SessionEntry[]): "short" | "long" | undefined {
-	let tier: "short" | "long" | undefined;
-	for (const entry of entries) {
-		if (entry.type === "compaction") {
-			tier = undefined;
-		} else if (entry.type === "message" && entry.message.role === "assistant") {
-			const { cacheWrite, cacheWrite1h } = entry.message.usage;
-			if (cacheWrite > 0 && cacheWrite1h !== undefined) tier = cacheWrite1h > 0 ? "long" : "short";
-		}
-	}
-	return tier;
-}
-
-export function formatRemaining(ms: number): string {
-	if (ms <= 0) return "cache cold";
-	const seconds = Math.ceil(ms / 1000);
-	if (seconds >= 120) return `⏱ ${Math.floor(seconds / 60)}m`;
-	return `⏱ ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-export function formatTokens(count: number): string {
-	return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count);
-}
-
 function canonical(value: unknown): string {
 	// Pi moves the cache breakpoint to the newest message on every request; it is not part of the cached content.
 	return JSON.stringify(value, (key, field) => (key === "cache_control" ? undefined : field)) ?? "undefined";
@@ -125,11 +81,8 @@ function difference(reason: string, captured: string, rebuilt: string): PrefixMi
 	return { reason, captured: captured.slice(from, at + 160), rebuilt: rebuilt.slice(from, at + 160) };
 }
 
-/**
- * Where `rebuilt` stops matching the cache entry `captured` wrote, or undefined when it extends that request exactly.
- * `cacheNeutral` names top-level fields the provider keeps out of the cached prefix.
- */
-export function prefixMismatch(captured: Payload, rebuilt: Payload, key: string, cacheNeutral: ReadonlySet<string> = new Set()): PrefixMismatch | undefined {
+/** Where `rebuilt` stops matching the cache entry `captured` wrote, or undefined when it extends that request exactly. */
+function prefixMismatch(captured: Payload, rebuilt: Payload, key: string, cacheNeutral: ReadonlySet<string>): PrefixMismatch | undefined {
 	for (const field of new Set([...Object.keys(captured), ...Object.keys(rebuilt)])) {
 		if (field === key || OUTPUT_LIMIT_KEYS.has(field) || cacheNeutral.has(field)) continue;
 		const [before, after] = [canonical(captured[field]), canonical(rebuilt[field])];
@@ -151,16 +104,7 @@ export function prefixMismatch(captured: Payload, rebuilt: Payload, key: string,
 }
 
 function isTrailingEffort(item: unknown): boolean {
-	return isPayload(item) && (item.role === "system" || item.type === "configuration_update");
-}
-
-/**
- * `rebuilt` plus the top-level fields only `captured` has. Extensions earlier in the before_provider_request
- * chain add fields to the agent's requests (codex-fast adds service_tier), and the summary request skips that chain.
- */
-export function withCapturedFields(captured: Payload, rebuilt: Payload): Payload {
-	const missing = Object.keys(captured).filter((field) => !(field in rebuilt));
-	return missing.length === 0 ? rebuilt : { ...rebuilt, ...Object.fromEntries(missing.map((field) => [field, captured[field]])) };
+	return isPlainObject(item) && (item.role === "system" || item.type === "configuration_update");
 }
 
 /**
@@ -172,15 +116,31 @@ export function withCapturedFields(captured: Payload, rebuilt: Payload): Payload
  */
 export function withSharedPrefixCache(payload: Payload, cacheKey: string): Payload {
 	const input = payload.input;
-	if (typeof payload.prompt_cache_key !== "string" || !isPayload(payload.prompt_cache_options) || !Array.isArray(input)) return payload;
+	if (typeof payload.prompt_cache_key !== "string" || !isPlainObject(payload.prompt_cache_options) || !Array.isArray(input)) return payload;
 	const [first, ...rest] = input;
-	if (!isPayload(first) || first.role !== "developer" || typeof first.content !== "string") return payload;
+	if (!isPlainObject(first) || first.role !== "developer" || typeof first.content !== "string") return payload;
 	const content = [{ type: "input_text", text: first.content, prompt_cache_breakpoint: { mode: "explicit", ttl: "12h" } }];
 	return { ...payload, prompt_cache_key: cacheKey, input: [{ ...first, content }, ...rest] };
 }
 
-function contentText(content: string | { type: string; text?: string }[]): string {
-	return typeof content === "string" ? content : content.flatMap((block) => (block.type === "text" && block.text ? [block.text] : [])).join("\n");
+/**
+ * The summary request's payload, built from Pi's `params` the way the agent's request was: with the shared prefix
+ * key when `sharedKey` is set, and with the top-level fields only the captured request has, which extensions earlier
+ * in the before_provider_request chain add (codex-fast adds service_tier) and the summary request skips. Returned only
+ * when it extends the captured request's cache entry; otherwise, where it stops matching. `cacheNeutral` names
+ * top-level fields the provider keeps out of the cached prefix.
+ */
+export function summaryPayload(
+	params: unknown,
+	prefix: CachedPrefix,
+	sharedKey: string | undefined,
+	cacheNeutral: ReadonlySet<string>,
+): { payload: Payload; sharedPrefix: boolean } | PrefixMismatch {
+	if (!isPlainObject(params)) return { reason: "the provider payload is not an object" };
+	const shared = sharedKey ? withSharedPrefixCache(params, sharedKey) : params;
+	const missing = Object.keys(prefix.payload).filter((field) => !(field in shared));
+	const payload = { ...shared, ...Object.fromEntries(missing.map((field) => [field, prefix.payload[field]])) };
+	return prefixMismatch(prefix.payload, payload, prefix.key, cacheNeutral) ?? { payload, sharedPrefix: shared !== params };
 }
 
 /** First words of a message as the model reads it, so the summary prompt can point at where the kept context starts. */
@@ -282,14 +242,10 @@ Keep each section concise. Preserve exact file paths, function names, and error 
  * extension's previous compaction stored in `details` (Pi carries lists forward only from its own compactions). The
  * model reads the previous summary in the conversation and can copy its lists, so lists in its text are replaced.
  */
-export function checkpointSummary(
-	text: string,
-	fileOps: { read: Iterable<string>; written: Iterable<string>; edited: Iterable<string> },
-	previousDetails: unknown,
-): { summary: string; readFiles: string[]; modifiedFiles: string[] } {
+export function checkpointSummary(text: string, fileOps: FileOperations, previousDetails: unknown): { summary: string; readFiles: string[]; modifiedFiles: string[] } {
 	const read = new Set(fileOps.read);
 	const modified = new Set([...fileOps.written, ...fileOps.edited]);
-	if (isPayload(previousDetails)) {
+	if (isPlainObject(previousDetails)) {
 		const { readFiles, modifiedFiles } = previousDetails;
 		if (Array.isArray(readFiles)) for (const file of readFiles) if (typeof file === "string") read.add(file);
 		if (Array.isArray(modifiedFiles)) for (const file of modifiedFiles) if (typeof file === "string") modified.add(file);

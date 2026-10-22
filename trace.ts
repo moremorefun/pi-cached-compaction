@@ -2,7 +2,6 @@ import { appendFileSync, readFileSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { formatTokens } from "./cached-request.ts";
 
 /** One JSON line per compaction decision, compaction outcome, and compact-before-expiry decision, for every session. */
 export const TRACE_PATH = join(getAgentDir(), "cached-compaction.jsonl");
@@ -24,7 +23,7 @@ export interface CompactTrace {
 	event: "compact";
 	trigger: Trigger;
 	model: string;
-	/** "cached": this extension wrote the summary; "fallback": Pi's default runs; "cancelled": nothing runs. */
+	/** "cached": this extension wrote the summary; "fallback": Pi's compaction runs; "cancelled": nothing runs. */
 	outcome: "cached" | "fallback" | "cancelled";
 	reason?: string;
 	mismatch?: { captured?: string; rebuilt?: string };
@@ -66,6 +65,7 @@ export interface ExpiryTrace {
 
 export type TraceEvent = CompactTrace | ResultTrace | FailedTrace | ExpiryTrace;
 export type TraceRecord = TraceEvent & { at: string; session: string };
+const TRACE_EVENTS = new Set<string>(["compact", "result", "failed", "expiry"] satisfies TraceEvent["event"][]);
 
 export function appendTrace(record: TraceRecord): void {
 	try {
@@ -87,10 +87,10 @@ export function readTraces(session: string, limit: number): TraceRecord[] {
 	const records: TraceRecord[] = [];
 	for (const line of text.split("\n")) {
 		if (!line) continue;
-		// A line cut short by a crash mid-write is skipped; the rest of the log is still readable.
+		// A line cut short by a crash mid-write is skipped, and so is an event another version wrote.
 		try {
 			const record = JSON.parse(line) as TraceRecord;
-			if (record.session === session) records.push(record);
+			if (record.session === session && TRACE_EVENTS.has(record.event)) records.push(record);
 		} catch {}
 	}
 	return records.slice(-limit);
@@ -109,6 +109,17 @@ function cacheShare(usage: TraceUsage): string {
 	return `${pct}% of ${formatTokens(prompt)} from cache, ${formatTokens(usage.output)} out, $${usage.cost.toFixed(4)}`;
 }
 
+export function formatRemaining(ms: number): string {
+	if (ms <= 0) return "cache cold";
+	const seconds = Math.ceil(ms / 1000);
+	if (seconds >= 120) return `⏱ ${Math.floor(seconds / 60)}m`;
+	return `⏱ ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+export function formatTokens(count: number): string {
+	return count >= 1000 ? `${Math.round(count / 1000)}k` : String(count);
+}
+
 export function formatDuration(ms: number): string {
 	return ms >= 120_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`;
 }
@@ -124,14 +135,14 @@ export function describeTrace(record: TraceRecord): string {
 				const sent = record.lastRequest?.promptTokens;
 				return `${time} ${what}: cached, ${cacheShare(usage)}${sent ? ` (last turn sent ${formatTokens(sent)})` : ""}, ${seconds.toFixed(1)}s, summary ${summaryChars} chars`;
 			}
-			const then = record.outcome === "fallback" ? "Pi's default" : "cancelled";
+			const then = record.outcome === "fallback" ? "Pi's compaction" : "cancelled";
 			const usage = record.response?.usage;
 			const spent = usage && usage.input + usage.cacheRead + usage.cacheWrite > 0 ? ` (the summary request used ${cacheShare(usage)})` : "";
 			return `${time} ${what}: ${then}, ${record.reason}${spent}`;
 		}
 		case "result":
 			return record.by === "pi"
-				? `${time}   Pi's default compaction saved${record.usage ? `: ${cacheShare(record.usage)}` : ""}, summary ${record.summaryChars} chars`
+				? `${time}   Pi's compaction saved${record.usage ? `: ${cacheShare(record.usage)}` : ""}, summary ${record.summaryChars} chars`
 				: `${time}   saved, ${formatTokens(record.tokensBefore)} tokens summarized`;
 		case "failed":
 			// Pi can fail before session_before_compact runs ("Nothing to compact"), so this line names its trigger.
