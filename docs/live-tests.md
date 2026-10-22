@@ -159,6 +159,7 @@ Rerun on pi-claude-bridge `c459fde` and Claude Code 2.1.308, `pi-claude/claude-o
 
 - Claude Code still keeps the 108 KB read as a file with a 2 KB preview, so that's what the summary sees.
 - A compaction in the middle of a run reads only the tool definitions (1,960 tokens), even for the messages the bridge copied. My two real auto-compactions that day (507k and 529k) were both mid-run and read 3,117. Filed as pi-claude-bridge#33: the fork sent a different system prompt from the live query's, a restart after a mid-run compaction ended the copied prefix early, and a fork during the session's first query had nothing to copy.
+- The same mid-run test on direct providers, through opencode-go, read everything the previous request had cached. Claude Haiku 5.5 read 39,647 of 51,776 (77%) and 38,663 of 51,021 (76%) against previous requests of 39,649 and 38,665. GPT-6 Luna read 36,140 of 43,663 (83%) against 36,143. The rest was the tool result that had just come back plus the instruction, about 12k tokens. So the mid-run miss is the bridge's alone.
 
 ## Not yet tested live
 
