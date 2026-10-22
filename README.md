@@ -46,7 +46,7 @@ The provider reads nearly all of it from the cache at about a tenth of the input
 ## Install
 
 ```bash
-pi install git:github.com/nicobailon/pi-cached-compaction
+pi install npm:pi-cached-compaction
 ```
 
 Then run `/reload`. It needs Pi 0.87.0 or newer, and everything is on by default.
