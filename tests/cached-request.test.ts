@@ -79,11 +79,11 @@ test("the kept start is the first kept message the request carries, with tool ca
 		{ ...entry("a1", call(1)), parentId: "k" } as SessionEntry,
 		{ ...entry("a2", call(2)), parentId: "a1" } as SessionEntry,
 	];
-	assert.deepEqual(keptStart(entries, "k", [user("start", 0), call(1), call(2)]), { text: '[tool call: bash {"command":"ls"}]', fromEnd: 2 });
+	assert.deepEqual(keptStart(entries, "k", [user("start", 0), call(1), call(2)]), { text: '[tool call: bash {"command":"ls"}]', fromEnd: 2, count: 2 });
 	// A `!!` command is kept in the session but never sent to the model.
 	const hidden = { role: "bashExecution", command: "git status", output: "", exitCode: 0, cancelled: false, truncated: false, excludeFromContext: true, timestamp: 4 } as AgentMessage;
 	const afterHidden = [entry("b", hidden), { ...entry("n", user("next", 5)), parentId: "b" } as SessionEntry];
-	assert.deepEqual(keptStart(afterHidden, "b", [hidden, user("next", 5)]), { text: "next", fromEnd: 1 });
+	assert.deepEqual(keptStart(afterHidden, "b", [hidden, user("next", 5)]), { text: "next", fromEnd: 1, count: 1 });
 	const thinkingOnly = { role: "assistant", content: [{ type: "thinking", thinking: "..." }], timestamp: 3 } as AgentMessage;
 	assert.equal(keptStart([entry("a3", thinkingOnly)], "a3", [thinkingOnly]), undefined);
 });

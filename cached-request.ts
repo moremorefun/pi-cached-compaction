@@ -202,6 +202,8 @@ export interface KeptStart {
 	text: string;
 	/** Which of the kept messages opening with `text` it is, counting back from the end (1 for the last). */
 	fromEnd: number;
+	/** How many messages the request carries from the kept start on. */
+	count: number;
 }
 
 /**
@@ -224,20 +226,22 @@ export function keptStart(entries: SessionEntry[], firstKeptEntryId: string, con
 	if (at === -1) return undefined;
 	const previews = convertToLlm(sent.slice(at)).map(messagePreview);
 	const text = previews[0];
-	return text ? { text, fromEnd: previews.filter((preview) => preview === text).length } : undefined;
+	return text ? { text, fromEnd: previews.filter((preview) => preview === text).length, count: previews.length } : undefined;
 }
 
 export function summaryInstruction(kept: KeptStart, customInstructions: string | undefined): string {
 	const repeated = kept.fromEnd > 1 ? ` Several kept messages begin with this text: it is number ${kept.fromEnd} of them, counting back from the end.` : "";
 	const toolCalls = kept.text.includes("[tool call: ") ? " Tool calls are written as [tool call: name arguments]." : "";
 	const focus = customInstructions?.trim() ? `\n\nAdditional focus: ${customInstructions.trim()}` : "";
-	return `Stop working on the task and do not call any tools. Write a structured context checkpoint summary of the conversation above. Another LLM will use it to continue the work after the earlier messages are removed.
+	return `Stop working on the task and do not call any tools. Write a structured context checkpoint summary of the earlier part of the conversation above. Another LLM will continue the work from your summary, followed by the last ${kept.count} messages of the conversation, which stay in context verbatim.
 
-Everything from the message that begins with the text below onward stays in context verbatim, placed right after your summary.${repeated}${toolCalls} Summarize only what comes before that message, and describe the state as of that point. Do not report anything from the kept messages as done or decided: the next model reads them itself, after your summary.
+The kept messages start with the message that begins with the text below.${repeated}${toolCalls}
 
 <kept-start>
 ${kept.text}
 </kept-start>
+
+Summarize only the messages before it, as if the conversation ended right there. Done lists only work finished before it. Whatever happens from that message on, including its tool calls, their results, and later replies, has not happened as far as your summary knows: leave it out, or list it under Next Steps if it was already planned.
 
 If the conversation starts with an earlier summary, fold it into the new one: keep its facts, move finished items to Done, and update Next Steps.
 
@@ -270,7 +274,7 @@ Use this EXACT format:
 - [Any data, examples, or references needed to continue]
 - [Or "(none)" if not applicable]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages. Reply with the summary only.${focus}`;
+Keep each section concise. Preserve exact file paths, function names, and error messages. Reply with the summary only, and stop it right before the message that begins with the <kept-start> text.${focus}`;
 }
 
 /**
