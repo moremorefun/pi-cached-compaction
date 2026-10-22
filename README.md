@@ -133,21 +133,19 @@ So "5 minutes while working, 1 hour when idle" costs more than choosing 1 hour f
 
 While Pi is idle, the footer shows how long the cache has left: `⏱ 42m`, then `⏱ 0:45`, turning to the warning color in the last 30 seconds and to `cache cold` once it expires. The lifetime comes from the cache tier the provider reports it wrote (Pi's Anthropic provider and pi-claude-bridge report it), else from the model's declared lifetime, else OpenAI's 30-minute minimum for GPT-5.6 and later. Other models show no countdown unless you declare a lifetime with Pi's `modelOverrides.promptCache`. In powerline-footer it shows in the `extension_statuses` segment.
 
-With `compactBeforeExpiry` on, Pi compacts 20 seconds before the cache expires, but only when it's idle, nothing is queued, Pi's automatic compaction is on, the context holds at least `minContextTokens` tokens, and the cached path is available. Otherwise nothing happens. Sending a message resets the timer. The threshold is in tokens rather than percent because the cost of rewriting an expired cache depends on its size, and on 1M-token models a percentage would almost never trigger.
+By default, Pi compacts 20 seconds before the cache expires, but only when it's idle, nothing is queued, Pi's automatic compaction is on, the context holds at least `minContextTokens` tokens, and the cached path is available. Otherwise nothing happens. Sending a message resets the timer. The threshold is in tokens rather than percent because the cost of rewriting an expired cache depends on its size, and on 1M-token models a percentage would almost never trigger.
 
 On `pi-claude/*` this saves no money: Claude Code bills by subscription, so the bridge prices its models at $0. What it saves is subscription quota and the slow first reply after a cold cache. It still replaces the older part of the conversation with a summary well before Pi would compact a 1M-token model, so raise `minContextTokens` or turn it off if you'd rather keep the full context through long pauses.
+
+The settings live under `cachedCompaction` in `~/.pi/agent/settings.json`; project settings files don't apply to this key, and an unknown key is an error. The defaults are `cacheRetention: "long"`, `compactBeforeExpiry: true`, and `minContextTokens: 50000`. To stop compacting before expiry:
 
 ```json
 {
   "cachedCompaction": {
-    "cacheRetention": "long",
-    "compactBeforeExpiry": true,
-    "minContextTokens": 50000
+    "compactBeforeExpiry": false
   }
 }
 ```
-
-Put this in `~/.pi/agent/settings.json`; project settings files don't apply to this key, and an unknown key is an error. The defaults are `"long"`, `false`, and `50000`.
 
 ## How it stays safe
 

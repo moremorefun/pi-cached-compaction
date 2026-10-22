@@ -5,14 +5,15 @@ import { join } from "node:path";
 import test from "node:test";
 import { autoCompactionEnabled, loadConfig } from "../config.ts";
 
-test("settings: a byte-order mark is allowed, unknown keys fail, and Pi's compaction switch is read project over global", () => {
+test("settings: compacting before expiry is on by default, a byte-order mark is allowed, unknown keys fail, and Pi's compaction switch is read project over global", () => {
 	const dir = mkdtempSync(join(tmpdir(), "pcc-config-"));
 	const settings = join(dir, "settings.json");
 	const project = join(dir, "project");
 	process.env.PI_CODING_AGENT_DIR = dir;
 	try {
-		writeFileSync(settings, String.fromCharCode(0xfeff) + JSON.stringify({ cachedCompaction: { compactBeforeExpiry: true }, compaction: { enabled: false } }));
 		assert.equal(loadConfig().compactBeforeExpiry, true);
+		writeFileSync(settings, String.fromCharCode(0xfeff) + JSON.stringify({ cachedCompaction: { compactBeforeExpiry: false }, compaction: { enabled: false } }));
+		assert.equal(loadConfig().compactBeforeExpiry, false);
 		assert.equal(autoCompactionEnabled(undefined), false);
 		writeFileSync(settings, JSON.stringify({ cachedCompaction: { compactBeforeExpiryy: true } }));
 		assert.throws(loadConfig, /unknown keys: compactBeforeExpiryy/);
