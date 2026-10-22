@@ -2,7 +2,7 @@
 
 Pi compaction that reads the prompt cache your session already built. On big sessions it costs a fraction of Pi's, and the summary is written from the full tool output instead of 2,000-character excerpts.
 
-https://github.com/user-attachments/assets/6c16cbae-8b96-4a3b-a3a6-b495d6370b0c
+https://github.com/user-attachments/assets/04cec926-4eaa-411b-ad1c-33aba6109323
 
 ![The cached compaction card in Pi: "07:42:48 /compact: cached, 99% of 667k from cache, 3k out, 29.5s, summary 5791 chars. vs Pi's compaction: 86% less, $0.19 instead of ~$1.4 (it sends ~328k tokens, none from cache). 07:42:48 saved, 666k tokens summarized." The footer below it reads "~/pi-subagents-app ⏱ 59m · claude-opus-5-5 · high".](media/card-667k.png)
 
