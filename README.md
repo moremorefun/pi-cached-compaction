@@ -23,7 +23,15 @@ A real card from a 667k-token Opus 5.5 session, a subagent implementing a GitHub
 
 Pi's compaction swaps the system prompt, drops the tools, and flattens the messages into text. None of that matches what the provider has cached, so every token of the summary request is billed at full price.
 
-I wrote this extension to keep all three as they are and append one instruction instead, as the next turn of the same conversation:
+It also cuts every tool result down to its first 2,000 characters, and the bigger the session, the more that throws away. Long sessions do their work in long outputs: whole files, test runs, build logs. The summarizer sees only the start of each one, so it misses the bottom of the file and the failures listed at the end of the test run. In eleven of my sessions that passed 700k tokens, Pi's compaction would have shown it 35–57% of the tool output, leaving out 300k to 1M characters per session.
+
+```
+ one 40 KB test run, as the summarizer sees it
+ Pi's compaction        [first 2,000 chars]░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  ← the failures are down here
+ pi-cached-compaction   [the whole output, read from the cache              ]
+```
+
+I wrote this extension to keep the system prompt, the tools, and the messages as they are, and append one instruction instead, as the next turn of the same conversation:
 
 ```
 Pi's compaction        [summarizer prompt] [older messages as text, tool output cut]      nothing cached
@@ -37,7 +45,7 @@ The provider reads nearly all of it from the cache at about a tenth of the input
 ## vs Pi's compaction
 
 - **Reads the cache.** About 99% of the summary request comes from the cache at normal compaction sizes.
-- **Sees all the tool output, at the cache price.** Pi's compaction shows the model the first 2,000 characters of each tool result, and the detail a summary needs, like an error message, a failing test, or a value deep in a file, is often past that. This one shows all of it. That output is already in the cache, so it costs no more to include than the rest of the session.
+- **Sees all the tool output, at the cache price.** Pi's compaction shows the model the first 2,000 characters of each tool result. This one shows all of it, and since that output is already in the cache, including it costs no more than the rest of the session.
 - **Compares itself with Pi's.** Each compaction gets a card showing its cost next to what Pi's compaction would have cost for the same messages.
 - **Compacts before the cache expires.** If you step away, it compacts from the warm cache, so your next message doesn't pay to write the whole session again.
 - **Falls back cleanly.** It checks that the request repeats your last one byte for byte up to the new part. When it can't prove that, Pi's own compaction runs as usual. (Claude through pi-claude-bridge is checked by the bridge instead; see [Providers](#providers).)

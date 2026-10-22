@@ -127,6 +127,26 @@ For comparison I also built an 895k-token session out of nothing but whole-file 
 
 That run also showed Claude Code's own limit: it keeps a tool result over about 50 KB as a file and puts a 2 KB preview in the conversation. Through the bridge, the summary sees what the live model saw, previews included.
 
+## How much tool output Pi's compaction shows
+
+Pi's serializer keeps the first 2,000 characters of each tool result (`truncateForSummary` in Pi's compaction utils). I counted what that leaves in every session of mine that passed 700k tokens, all Opus 5.5 subagent runs doing real issue work:
+
+| Peak context | Tool results | Over 2,000 chars | Tool output | Pi's compaction shows |
+|---|---|---|---|---|
+| 814k | 1,879 | 272 | 2.09M chars | 52% |
+| 799k | 1,120 | 128 | 1.09M chars | 44% |
+| 799k | 1,353 | 193 | 1.62M chars | 57% |
+| 798k | 561 | 164 | 1.40M chars | 37% |
+| 791k | 865 | 148 | 1.46M chars | 38% |
+| 768k | 479 | 74 | 0.61M chars | 50% |
+| 767k | 521 | 109 | 0.92M chars | 39% |
+| 756k | 555 | 101 | 0.90M chars | 41% |
+| 748k | 501 | 95 | 0.97M chars | 35% |
+| 747k | 491 | 94 | 0.72M chars | 46% |
+| 719k | 439 | 86 | 0.66M chars | 46% |
+
+Only 11–29% of the results run past 2,000 characters, but they hold most of the output, so 300k to 1M characters per session never reach the summarizer. This counts the whole session; Pi keeps its most recent 20k tokens out of the summary, so the summarized part loses slightly less.
+
 ## Rechecked on the current bridge
 
 Rerun on pi-claude-bridge `c459fde` and Claude Code 2.1.308, `pi-claude/claude-opus-5-5` at thinking high, in a separate agent directory:
