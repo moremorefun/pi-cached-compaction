@@ -1,22 +1,36 @@
 {
   "name": "pi-cached-compaction",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi compaction that reads the conversation's prompt cache instead of paying full input price",
   "type": "module",
-  "keywords": ["pi-package", "pi", "coding-agent", "compaction", "prompt-cache", "extension"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "coding-agent",
+    "compaction",
+    "prompt-cache",
+    "extension"
+  ],
   "author": "Nico Bailon",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nicobailon/pi-cached-compaction.git"
   },
-  "files": ["*.ts", "README.md", "CHANGELOG.md", "docs/"],
+  "files": [
+    "*.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "docs/"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": ">=0.87.0",

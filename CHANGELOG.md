@@ -2,11 +2,19 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-23
+
+### Highlights
+- Kimi K3 on Moonshot's API keeps its cache for an hour in interactive sessions, so a coffee break no longer means paying to write the whole session again.
+- The footer counts down Kimi's cache, and the session compacts just before it expires.
+- Compacting before expiry now waits until a session holds 140k tokens, so shorter sessions keep their full history through a break.
+
 ### Added
 - **Kimi K3's 1-hour cache** — On Moonshot's API (`moonshotai` and `moonshotai-cn`), interactive sessions now ask Kimi K3 for its 1-hour cache instead of the 5-minute default, so ordinary breaks don't expire it. The footer counts down either lifetime, and the session compacts before it expires. Writing a 1-hour cache costs 2× the input price; set `cacheRetention: "short"` to keep 5 minutes. Thanks @fungilation for the request ([#1](https://github.com/nicobailon/pi-cached-compaction/issues/1)).
 
 ### Changed
 - **Compacting before expiry waits for bigger sessions** — It now starts at 140k tokens of context instead of 50k, so shorter sessions keep their full history through a break. Set `minContextTokens` under `cachedCompaction` in `~/.pi/agent/settings.json` to change it.
+- **`/cached-compaction` wording** — When the last request didn't use the cache, it now says so in the same words as the compaction card.
 
 ## [0.1.0] - 2026-10-22
 
