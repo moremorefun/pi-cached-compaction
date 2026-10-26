@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { checkpointSummary, keptStart, summaryPayload, trailingMessages, withKimiLongCache, withSharedPrefixCache } from "../cached-request.ts";
+import { checkpointSummary, keptStart, summaryPayload, summaryThinkingLevel, trailingMessages, withKimiLongCache, withSharedPrefixCache } from "../cached-request.ts";
 
 const user = (text: string, timestamp: number) => ({ role: "user", content: text, timestamp }) as AgentMessage;
 const entry = (id: string, message: AgentMessage) => ({ type: "message", id, parentId: null, timestamp: "", message }) as SessionEntry;
@@ -173,4 +173,14 @@ test("the summary ends with one set of file lists, merged with the previous comp
 	assert.equal(checkpoint.summary, "## Goal\nEdit notes.\n\n<read-files>\na.ts\nb.ts\n</read-files>\n\n<modified-files>\nnotes.txt\nold.txt\n</modified-files>");
 	assert.deepEqual(checkpoint.readFiles, ["a.ts", "b.ts"]);
 	assert.deepEqual(checkpoint.modifiedFiles, ["notes.txt", "old.txt"]);
+});
+
+test("the summary uses its own thinking level only where the level travels inside the messages", () => {
+	const model = (api: string, compat: object, thinkingLevelMap?: object) => ({ id: "m", api, compat, reasoning: true, thinkingLevelMap }) as never;
+	const opus = model("anthropic-messages", { supportsMidConvoEffort: true }, { off: null, minimal: null });
+	assert.equal(summaryThinkingLevel(opus, "xhigh", "medium"), "medium");
+	assert.equal(summaryThinkingLevel(opus, "xhigh", "session"), "xhigh");
+	assert.equal(summaryThinkingLevel(opus, "off", "medium"), "off");
+	assert.equal(summaryThinkingLevel(model("anthropic-messages", {}), "high", "medium"), "high");
+	assert.equal(summaryThinkingLevel(model("openai-responses", { supportsMidConvoEffort: true }), "high", "medium"), "high");
 });

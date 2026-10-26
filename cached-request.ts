@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { contentText, type Message } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, contentText, type Api, type Message, type Model } from "@earendil-works/pi-ai";
 import {
 	buildSessionProjection,
 	convertToLlm,
@@ -17,6 +17,12 @@ const OUTPUT_LIMIT_KEYS = new Set(["max_tokens", "max_output_tokens", "max_compl
 const PI_PROMPT_CHARS = 1_200;
 
 export type Payload = Record<string, unknown>;
+
+export function summaryThinkingLevel<T extends string>(model: Model<Api>, sessionLevel: T, configured: string): T {
+	const effortInMessages = model.api === "anthropic-messages" && (model as Model<"anthropic-messages">).compat?.supportsMidConvoEffort === true;
+	if (configured === "session" || sessionLevel === "off" || !effortInMessages) return sessionLevel;
+	return clampThinkingLevel(model, configured as never) as T;
+}
 
 export interface CachedPrefix {
 	payload: Payload;

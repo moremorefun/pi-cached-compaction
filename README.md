@@ -91,6 +91,7 @@ Add a `cachedCompaction` key to `~/.pi/agent/settings.json`. Project settings fi
 | `compactBeforeExpiry` | `true` | compact 20 s before the cache expires, when idle |
 | `minContextTokens` | `140000` | the smallest context worth compacting before expiry |
 | `cacheRetention` | `"long"` | ask for the longer cache in interactive sessions (2× writes on Anthropic and Kimi); `"short"` keeps Pi's default |
+| `thinkingLevel` | `"medium"` | thinking level of the summary on Anthropic models that set the level per turn inside the messages (Claude Opus 5.5, Fable 5.1), where a different level keeps the cache; clamped to what the model supports. Other models, and sessions with thinking off, use the session's level. `"session"` always uses it |
 
 ```json
 {
@@ -187,7 +188,7 @@ Where the two cost about the same, the difference is in what the summary was wri
 1. Same model as the last request, and the conversation only grew since then. New messages and extension notices are fine. Edits, `/tree`, a model switch, or a context overflow are not.
 2. The last request used the cache, and the cache hasn't expired.
 3. The instruction can quote where the kept messages start (below).
-4. The rebuilt request is identical to the last one up to the new part. This runs on the exact request Pi would send, using Pi's own serializer, so a different thinking level (on most models), an edited message, or a field another extension changed all count. Nothing is sent when it fails.
+4. The rebuilt request is identical to the last one up to the new part. This runs on the exact request Pi would send, using Pi's own serializer, so a different thinking level (on models that send it outside the messages), an edited message, or a field another extension changed all count. Nothing is sent when it fails.
 
 If any check fails, Pi's own compaction runs. When compacting before expiry, nothing runs and the cache cools.
 

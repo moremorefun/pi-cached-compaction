@@ -14,6 +14,7 @@ import {
 	piCompactionInput,
 	summaryInstruction,
 	summaryPayload,
+	summaryThinkingLevel,
 	trailingMessages,
 	withKimiLongCache,
 	withSharedPrefixCache,
@@ -329,7 +330,7 @@ export default function cachedCompaction(pi: ExtensionAPI) {
 		};
 
 		let mismatch: PrefixMismatch | undefined;
-		const thinkingLevel = pi.getThinkingLevel();
+		const thinkingLevel = summaryThinkingLevel(request.model, pi.getThinkingLevel(), config.thinkingLevel);
 		const controller = new AbortController();
 		const disableTools = prefix !== undefined && isOpenAiResponses(request.model);
 		const cacheNeutral = new Set(disableTools ? ["tool_choice"] : []);

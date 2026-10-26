@@ -12,6 +12,9 @@ test("settings: compacting before expiry is on by default, a byte-order mark is 
 	process.env.PI_CODING_AGENT_DIR = dir;
 	try {
 		assert.equal(loadConfig().compactBeforeExpiry, true);
+		assert.equal(loadConfig().thinkingLevel, "medium");
+		writeFileSync(settings, JSON.stringify({ cachedCompaction: { thinkingLevel: "minimal" } }));
+		assert.throws(loadConfig, /thinkingLevel .* must be "session" or one of low, medium, high, xhigh, max/);
 		writeFileSync(settings, String.fromCharCode(0xfeff) + JSON.stringify({ cachedCompaction: { compactBeforeExpiry: false }, compaction: { enabled: false } }));
 		assert.equal(loadConfig().compactBeforeExpiry, false);
 		assert.equal(autoCompactionEnabled(undefined), false);

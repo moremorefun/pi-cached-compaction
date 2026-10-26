@@ -3,13 +3,17 @@ import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { isPlainObject } from "./cached-request.ts";
 
+const SUMMARY_THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type SummaryThinkingLevel = (typeof SUMMARY_THINKING_LEVELS)[number] | "session";
+
 export interface CachedCompactionConfig {
 	cacheRetention: "short" | "long";
 	compactBeforeExpiry: boolean;
 	minContextTokens: number;
+	thinkingLevel: SummaryThinkingLevel;
 }
 
-const DEFAULTS: CachedCompactionConfig = { cacheRetention: "long", compactBeforeExpiry: true, minContextTokens: 140_000 };
+const DEFAULTS: CachedCompactionConfig = { cacheRetention: "long", compactBeforeExpiry: true, minContextTokens: 140_000, thinkingLevel: "medium" };
 
 const settingsPath = () => join(getAgentDir(), "settings.json");
 
@@ -26,13 +30,21 @@ export function loadConfig(): CachedCompactionConfig {
 	if (!isPlainObject(raw)) throw new Error(`cachedCompaction in ${path} must be an object`);
 	const unknown = Object.keys(raw).filter((key) => !(key in DEFAULTS));
 	if (unknown.length > 0) throw new Error(`cachedCompaction in ${path} has unknown keys: ${unknown.join(", ")}`);
-	const { cacheRetention = DEFAULTS.cacheRetention, compactBeforeExpiry = DEFAULTS.compactBeforeExpiry, minContextTokens = DEFAULTS.minContextTokens } = raw;
+	const {
+		cacheRetention = DEFAULTS.cacheRetention,
+		compactBeforeExpiry = DEFAULTS.compactBeforeExpiry,
+		minContextTokens = DEFAULTS.minContextTokens,
+		thinkingLevel = DEFAULTS.thinkingLevel,
+	} = raw;
 	if (cacheRetention !== "short" && cacheRetention !== "long") throw new Error(`cachedCompaction.cacheRetention in ${path} must be "short" or "long"`);
 	if (typeof compactBeforeExpiry !== "boolean") throw new Error(`cachedCompaction.compactBeforeExpiry in ${path} must be true or false`);
 	if (typeof minContextTokens !== "number" || !Number.isInteger(minContextTokens) || minContextTokens < 0) {
 		throw new Error(`cachedCompaction.minContextTokens in ${path} must be a whole number of tokens`);
 	}
-	return { cacheRetention, compactBeforeExpiry, minContextTokens };
+	if (thinkingLevel !== "session" && !SUMMARY_THINKING_LEVELS.includes(thinkingLevel as never)) {
+		throw new Error(`cachedCompaction.thinkingLevel in ${path} must be "session" or one of ${SUMMARY_THINKING_LEVELS.join(", ")}`);
+	}
+	return { cacheRetention, compactBeforeExpiry, minContextTokens, thinkingLevel: thinkingLevel as SummaryThinkingLevel };
 }
 
 export function autoCompactionEnabled(trustedProjectDir: string | undefined): boolean {
